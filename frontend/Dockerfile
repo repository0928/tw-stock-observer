@@ -1,42 +1,11 @@
-# 簡化的前端 Dockerfile
-FROM node:18-alpine
-
+FROM node:18-alpine AS builder
 WORKDIR /app
-
-# 複製 package 檔案
-COPY package.json package-lock.json ./
-
-# 安裝依賴
-RUN npm install
-
-# 複製源代碼
-COPY . .
-
-# 構建
-RUN npm run build
-
-# 安裝 serve
-RUN npm install -g serve
-
-# 暴露埠口
-EXPOSE 8080
-
-# 啟動
-CMD ["serve", "-s", "dist", "-l", "8080"]
-
-FROM node:18-alpine
-
-WORKDIR /app
-
 COPY package.json package-lock.json ./
 RUN npm install
-
 COPY . .
 RUN npm run build
 
-# 改用 Caddy 來 serve
-RUN apk add --no-cache caddy
-
+FROM caddy:alpine
+COPY --from=builder /app/dist /usr/share/caddy
 EXPOSE 8080
-
-CMD ["caddy", "run", "--config", "/app/Caddyfile"]
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
