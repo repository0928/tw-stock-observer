@@ -1,0 +1,99 @@
+version: '3.9'
+
+services:
+  # PostgreSQL 資料庫
+  postgres:
+    image: postgres:15-alpine
+    container_name: tw-stock-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tw_stock_observer
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tw-stock-network
+
+  # Redis 快取
+  redis:
+    image: redis:7-alpine
+    container_name: tw-stock-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tw-stock-network
+
+  # 後端 API
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tw-stock-api
+    environment:
+      - DEBUG=true
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/tw_stock_observer
+      - REDIS_ENABLED=true
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SECRET_KEY=dev-secret-key-12345
+      - CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: python main.py
+    networks:
+      - tw-stock-network
+    restart: unless-stopped
+
+  # 前端應用
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tw-stock-frontend
+    environment:
+      - VITE_API_URL=http://localhost:8000/api
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - api
+    networks:
+      - tw-stock-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  tw-stock-network:
+    driver: bridge
