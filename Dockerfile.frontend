@@ -1,0 +1,37 @@
+# 構建階段
+FROM node:18-alpine as builder
+
+WORKDIR /app
+
+# 複製 package 檔案
+COPY package*.json ./
+
+# 安裝依賴
+RUN npm ci
+
+# 複製源代碼
+COPY . .
+
+# 構建應用
+RUN npm run build
+
+# 生產階段
+FROM node:18-alpine
+
+WORKDIR /app
+
+# 安裝 serve
+RUN npm install -g serve
+
+# 複製構建結果
+COPY --from=builder /app/dist ./dist
+
+# 暴露埠口
+EXPOSE 5173
+
+# 健康檢查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:5173/ || exit 1
+
+# 啟動應用
+CMD ["serve", "-s", "dist", "-l", "5173"]
