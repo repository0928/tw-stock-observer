@@ -1,10 +1,10 @@
----
-services:
-  api:
-    root: backend
-    build:
-      dockerfile: Dockerfile
-  frontend:
-    root: frontend
-    build:
-      dockerfile: Dockerfile
+{
+  "services": {
+    "frontend": {
+      "root": "frontend",
+      "build": {
+        "dockerfile": "Dockerfile"
+      }
+    }
+  }
+}
