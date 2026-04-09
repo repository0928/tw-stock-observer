@@ -1,3 +1,5 @@
 {
-  "build_type": "dockerfile"
+  "build_type": "nodejs",
+  "build_command": "npm run build",
+  "output_dir": "dist"
 }
