@@ -23,3 +23,20 @@ EXPOSE 8080
 
 # 啟動
 CMD ["serve", "-s", "dist", "-l", "8080"]
+
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm install
+
+COPY . .
+RUN npm run build
+
+# 改用 Caddy 來 serve
+RUN apk add --no-cache caddy
+
+EXPOSE 8080
+
+CMD ["caddy", "run", "--config", "/app/Caddyfile"]
