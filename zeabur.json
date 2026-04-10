@@ -1,10 +1,7 @@
 {
   "services": {
     "frontend": {
-      "root": "frontend",
-      "build": {
-        "dockerfile": "Dockerfile"
-      }
+      "root": "frontend"
     }
   }
 }
