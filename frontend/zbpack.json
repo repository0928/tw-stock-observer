@@ -1,5 +1,6 @@
 {
   "build_type": "nodejs",
-  "build_command": "npm run build",
-  "output_dir": "dist"
+  "build_command": "npm install && npm run build",
+  "output_dir": "dist",
+  "cache_dependencies": true
 }

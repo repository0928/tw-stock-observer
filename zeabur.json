@@ -1,7 +1,13 @@
 {
   "services": {
     "frontend": {
-      "root": "frontend"
+      "root": "frontend",
+      "build": {
+        "command": "npm install && npm run build"
+      },
+      "serving": {
+        "dir": "dist"
+      }
     }
   }
 }
