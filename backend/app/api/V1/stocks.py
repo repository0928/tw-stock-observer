@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.schemas import StockResponse, StockQuoteResponse, KlineDailyResponse
 from app.models import Stock
-from app.stock_service import StockService
+from app.services.stock_service import StockService
 
 logger = logging.getLogger(__name__)
 
