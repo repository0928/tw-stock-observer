@@ -6,22 +6,17 @@ interface Stock {
   symbol: string
   name: string
   sector?: string
-}
-
-interface Quote {
-  symbol: string
-  name: string
-  price: number
-  change: number
-  change_percent: number
-  volume: number
-  high: number
-  low: number
-  open: number
-  close: number
-  timestamp: string
-  bid?: number
-  ask?: number
+  market_type?: string
+  close_price?: number
+  open_price?: number
+  high_price?: number
+  low_price?: number
+  change_amount?: number
+  change_percent?: number
+  volume?: number
+  eps?: number
+  pe_ratio?: number
+  pb_ratio?: number
 }
 
 function App() {
@@ -29,157 +24,46 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
-  const [selectedStock, setSelectedStock] = useState<Quote | null>(null)
 
-  // 動態決定 API URL
-  const getApiUrl = () => {
-    // 開發環境
-    if (import.meta.env.DEV) {
-      return import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
-    }
-    
-    // 生產環境 - 從當前域名推斷
-    const protocol = window.location.protocol
-    const hostname = window.location.hostname
-    
-    // 如果是 Zeabur，替換為後端 URL
-    if (hostname.includes('zeabur.app')) {
-      // 從前端 URL 推斷後端 URL
-      // 假設後端也在同一個 Zeabur 項目中
-      // 可以使用相同的域名但走不同的埠或路徑
-      return `https://tw-stock-observer-01-b.zeabur.app/api`
-    }
-    
-    // 其他情況下使用相同的主機名
-    return `${protocol}//${hostname}/api`
-  }
+  const API_URL = window.location.hostname.includes('zeabur.app')
+    ? 'https://tw-stock-observer-01-b.zeabur.app/api'
+    : 'http://localhost:8000/api'
 
-  const API_URL = getApiUrl()
-
-  console.log('🔧 應用配置:')
-  console.log('當前環境:', import.meta.env.MODE)
-  console.log('API URL:', API_URL)
-  console.log('主機名:', window.location.hostname)
-
-  // 獲取股票列表
-  const fetchStocks = async () => {
+  const fetchStocks = async (keyword?: string) => {
     setLoading(true)
     setError(null)
     try {
-      console.log('📡 正在從以下地址獲取股票列表:', `${API_URL}/v1/stocks`)
-      const response = await fetch(`${API_URL}/v1/stocks`, {
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-      })
-      
-      if (!response.ok) {
-        throw new Error(`API 請求失敗: ${response.status} ${response.statusText}`)
-      }
-      
-      const data = await response.json()
-      console.log('✅ 成功獲取股票列表:', data)
-      
-      // 處理不同的 API 回應格式
-      const stocksList = data.stocks || data.items || data || []
-      setStocks(Array.isArray(stocksList) ? stocksList : [])
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : '未知錯誤'
-      console.error('❌ 獲取股票列表失敗:', errorMsg)
-      setError(`無法載入股票列表: ${errorMsg}`)
-      setStocks([])
+      const url = keyword
+        ? `${API_URL}/v1/stocks/search/${encodeURIComponent(keyword)}`
+        : `${API_URL}/v1/stocks?limit=500`
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      const list = data.stocks || []
+      setStocks(list)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '載入失敗')
     }
     setLoading(false)
   }
 
-  // 搜尋股票
-  const searchStocks = async (keyword: string) => {
-    if (!keyword.trim()) {
-      fetchStocks()
-      return
-    }
+  useEffect(() => { fetchStocks() }, [])
 
-    setLoading(true)
-    setError(null)
-    try {
-      console.log('🔍 搜尋股票:', keyword)
-      const response = await fetch(`${API_URL}/v1/stocks/search/${encodeURIComponent(keyword)}`, {
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-      })
-      
-      if (!response.ok) {
-        throw new Error(`搜尋失敗: ${response.status}`)
-      }
-      
-      const data = await response.json()
-      console.log('✅ 搜尋結果:', data)
-      
-      const stocksList = data.stocks || data.items || []
-      setStocks(Array.isArray(stocksList) ? stocksList : [])
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : '未知錯誤'
-      console.error('❌ 搜尋失敗:', errorMsg)
-      setError(`搜尋失敗: ${errorMsg}`)
-    }
-    setLoading(false)
-  }
-
-  // 獲取股票行情
-  const fetchQuote = async (symbol: string) => {
-    try {
-      console.log('📊 正在獲取行情:', symbol)
-      const response = await fetch(`${API_URL}/v1/stocks/${symbol}/quote`, {
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-      })
-      
-      if (!response.ok) {
-        throw new Error(`獲取行情失敗: ${response.status}`)
-      }
-      
-      const data = await response.json()
-      console.log('✅ 行情數據:', data)
-      
-      // 轉換數字格式
-      const quote: Quote = {
-        symbol: data.symbol || symbol,
-        name: data.name || symbol,
-        price: parseFloat(data.price || 0),
-        change: parseFloat(data.change || 0),
-        change_percent: parseFloat(data.change_percent || 0),
-        volume: parseInt(data.volume || 0),
-        high: parseFloat(data.high || 0),
-        low: parseFloat(data.low || 0),
-        open: parseFloat(data.open || 0),
-        close: parseFloat(data.close || 0),
-        timestamp: data.timestamp || new Date().toISOString(),
-        bid: data.bid ? parseFloat(data.bid) : undefined,
-        ask: data.ask ? parseFloat(data.ask) : undefined,
-      }
-      
-      setSelectedStock(quote)
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : '未知錯誤'
-      console.error('❌ 獲取行情失敗:', errorMsg)
-      setError(`無法獲取行情: ${errorMsg}`)
-    }
-  }
-
-  // 初始化 - 載入股票列表
-  useEffect(() => {
-    fetchStocks()
-  }, [])
-
-  // 搜尋處理
   const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setSearchTerm(e.target.value)
-    searchStocks(e.target.value)
+    const val = e.target.value
+    setSearchTerm(val)
+    if (val.length === 0) fetchStocks()
+    else if (val.length >= 1) fetchStocks(val)
+  }
+
+  const fmt = (n?: number, digits = 2) =>
+    n != null ? n.toFixed(digits) : '--'
+
+  const changeColor = (n?: number) => {
+    if (n == null) return '#aaa'
+    if (n > 0) return '#ff4d4d'
+    if (n < 0) return '#33cc66'
+    return '#aaa'
   }
 
   return (
@@ -190,103 +74,90 @@ function App() {
       </header>
 
       <main className="app-main">
-        {/* 搜尋欄 */}
-        <section className="search-section">
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '1rem' }}>
           <input
             type="text"
             className="search-input"
-            placeholder="搜尋股票代碼或名稱... (例如: 2330)"
+            placeholder="搜尋股票代碼或名稱..."
             value={searchTerm}
             onChange={handleSearch}
+            style={{ flex: 1 }}
           />
-        </section>
+          <span style={{ color: '#aaa', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>
+            共 {stocks.length} 筆
+          </span>
+        </div>
 
-        {/* 錯誤提示 */}
         {error && (
-          <div style={{
-            background: 'rgba(244, 67, 54, 0.1)',
-            border: '1px solid rgba(244, 67, 54, 0.3)',
-            color: '#f44336',
-            padding: '1rem',
-            borderRadius: '8px',
-            marginBottom: '1rem',
-          }}>
+          <div style={{ color: '#f44336', padding: '0.5rem', marginBottom: '1rem' }}>
             ⚠️ {error}
           </div>
         )}
 
-        {/* 內容區 */}
-        <div className="content-container">
-          {/* 股票列表 */}
-          <section className="stocks-section">
-            <h2>股票列表</h2>
-            {loading ? (
-              <div className="loading">⏳ 載入中...</div>
-            ) : stocks.length > 0 ? (
-              <div className="stocks-grid">
-                {stocks.map((stock) => (
-                  <div
-                    key={stock.id || stock.symbol}
-                    className="stock-card"
-                    onClick={() => fetchQuote(stock.symbol)}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    <div className="stock-symbol">{stock.symbol}</div>
-                    <div className="stock-name">{stock.name}</div>
-                    <div className="stock-sector">{stock.sector || '未分類'}</div>
-                  </div>
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: '2rem', color: '#aaa' }}>⏳ 載入中...</div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{
+              width: '100%',
+              borderCollapse: 'collapse',
+              fontSize: '0.9rem',
+              background: 'rgba(255,255,255,0.03)',
+              borderRadius: '8px',
+              overflow: 'hidden',
+            }}>
+              <thead>
+                <tr style={{ background: 'rgba(255,255,255,0.08)', color: '#ccc' }}>
+                  {['股號','股名','市場','收盤','漲跌','漲跌幅%','開盤','最高','最低','成交量(千)','EPS','本益比','淨值比'].map(h => (
+                    <th key={h} style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 500 }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {stocks.map((s, i) => (
+                  <tr key={s.symbol} style={{
+                    background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)',
+                    borderBottom: '1px solid rgba(255,255,255,0.05)',
+                  }}>
+                    <td style={{ padding: '8px 12px', color: '#f90', fontWeight: 600 }}>{s.symbol}</td>
+                    <td style={{ padding: '8px 12px', color: '#fff', whiteSpace: 'nowrap' }}>{s.name}</td>
+                    <td style={{ padding: '8px 12px', color: '#aaa', textAlign: 'center' }}>
+                      <span style={{
+                        background: s.market_type === '上市' ? 'rgba(100,149,237,0.2)' : 'rgba(144,238,144,0.2)',
+                        color: s.market_type === '上市' ? '#6495ed' : '#90ee90',
+                        padding: '2px 6px', borderRadius: '4px', fontSize: '0.8rem'
+                      }}>{s.market_type || '--'}</span>
+                    </td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: changeColor(s.change_amount), fontWeight: 600 }}>
+                      {fmt(s.close_price)}
+                    </td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: changeColor(s.change_amount) }}>
+                      {s.change_amount != null ? (s.change_amount > 0 ? '+' : '') + fmt(s.change_amount) : '--'}
+                    </td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: changeColor(s.change_percent) }}>
+                      {s.change_percent != null ? (s.change_percent > 0 ? '+' : '') + fmt(s.change_percent) + '%' : '--'}
+                    </td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#ccc' }}>{fmt(s.open_price)}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#ff6b6b' }}>{fmt(s.high_price)}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#51cf66' }}>{fmt(s.low_price)}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#aaa' }}>
+                      {s.volume != null ? Math.round(s.volume / 1000).toLocaleString() : '--'}
+                    </td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#ccc' }}>{fmt(s.eps)}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#ccc' }}>{fmt(s.pe_ratio)}</td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#ccc' }}>{fmt(s.pb_ratio)}</td>
+                  </tr>
                 ))}
-              </div>
-            ) : (
-              <div className="no-data">
-                {searchTerm ? '未找到符合的股票' : '尚無股票資料'}
-              </div>
-            )}
-          </section>
-
-          {/* 行情詳情 */}
-          {selectedStock && (
-            <section className="quote-section">
-              <h2>股票行情</h2>
-              <div className="quote-card">
-                <div className="quote-header">
-                  <h3>{selectedStock.symbol} - {selectedStock.name}</h3>
-                </div>
-                <div className="quote-price">
-                  <span className="price">${selectedStock.price.toFixed(2)}</span>
-                  <span className={`change ${selectedStock.change_percent >= 0 ? 'up' : 'down'}`}>
-                    {selectedStock.change_percent >= 0 ? '+' : ''}{selectedStock.change_percent.toFixed(2)}%
-                  </span>
-                </div>
-                <div className="quote-details">
-                  <div className="detail-item">
-                    <span className="label">開盤:</span>
-                    <span className="value">${selectedStock.open.toFixed(2)}</span>
-                  </div>
-                  <div className="detail-item">
-                    <span className="label">最高:</span>
-                    <span className="value">${selectedStock.high.toFixed(2)}</span>
-                  </div>
-                  <div className="detail-item">
-                    <span className="label">最低:</span>
-                    <span className="value">${selectedStock.low.toFixed(2)}</span>
-                  </div>
-                  <div className="detail-item">
-                    <span className="label">成交量:</span>
-                    <span className="value">{(selectedStock.volume / 1000000).toFixed(2)}M</span>
-                  </div>
-                </div>
-              </div>
-            </section>
-          )}
-        </div>
+              </tbody>
+            </table>
+          </div>
+        )}
       </main>
 
       <footer className="app-footer">
         <p>© 2024 台股觀測站 | 版本 1.0.0</p>
-        <p style={{ fontSize: '0.8rem', marginTop: '0.5rem', opacity: 0.7 }}>
-          API 地址: {API_URL}
-        </p>
       </footer>
     </div>
   )
