@@ -73,6 +73,145 @@ class StockService:
             logger.error(f"搜尋股票失敗: {e}")
             return []
     
+    # ==================== TWSE/TPEX 同步 ====================
+
+    async def sync_stocks_from_twse(self) -> Dict:
+        """
+        從台灣證交所同步所有上市股票清單
+        來源: https://opendata.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL
+        """
+        added = 0
+        updated = 0
+        failed = 0
+
+        try:
+            url = "https://opendata.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status != 200:
+                        logger.error(f"TWSE API 回應錯誤: {response.status}")
+                        return {"added": 0, "updated": 0, "failed": 0, "error": "TWSE API 錯誤"}
+                    
+                    data = await response.json()
+
+            for item in data:
+                try:
+                    symbol = item.get("Code", "").strip()
+                    name = item.get("Name", "").strip()
+                    
+                    if not symbol or not name:
+                        continue
+                    
+                    # 只取純數字股票代碼（排除ETF、權證等）
+                    if not symbol.isdigit():
+                        continue
+
+                    existing = await self.get_stock_by_symbol(symbol)
+                    
+                    if existing:
+                        existing.name = name
+                        existing.market_type = "上市"
+                        existing.is_active = True
+                        existing.updated_at = datetime.utcnow()
+                        updated += 1
+                    else:
+                        stock = Stock(
+                            symbol=symbol,
+                            name=name,
+                            market_type="上市",
+                            is_active=True,
+                            is_suspended=False,
+                        )
+                        self.db.add(stock)
+                        added += 1
+
+                except Exception as e:
+                    logger.error(f"處理上市股票失敗 {item}: {e}")
+                    failed += 1
+
+            await self.db.commit()
+            logger.info(f"上市股票同步完成: 新增 {added}, 更新 {updated}, 失敗 {failed}")
+
+        except Exception as e:
+            logger.error(f"同步上市股票失敗: {e}")
+            await self.db.rollback()
+            return {"added": 0, "updated": 0, "failed": 0, "error": str(e)}
+
+        # 同步上櫃股票
+        added_tpex, updated_tpex, failed_tpex = await self._sync_tpex_stocks()
+        
+        return {
+            "twse": {"added": added, "updated": updated, "failed": failed},
+            "tpex": {"added": added_tpex, "updated": updated_tpex, "failed": failed_tpex},
+            "total_added": added + added_tpex,
+            "total_updated": updated + updated_tpex,
+        }
+
+    async def _sync_tpex_stocks(self):
+        """從櫃買中心同步所有上櫃股票"""
+        added = 0
+        updated = 0
+        failed = 0
+
+        try:
+            url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status != 200:
+                        logger.error(f"TPEX API 回應錯誤: {response.status}")
+                        return 0, 0, 0
+                    
+                    data = await response.json()
+
+            for item in data:
+                try:
+                    symbol = item.get("SecuritiesCompanyCode", "").strip()
+                    name = item.get("CompanyName", "").strip()
+
+                    if not symbol or not name:
+                        continue
+                    
+                    if not symbol.isdigit():
+                        continue
+
+                    existing = await self.get_stock_by_symbol(symbol)
+                    
+                    if existing:
+                        existing.name = name
+                        existing.market_type = "上櫃"
+                        existing.is_active = True
+                        existing.updated_at = datetime.utcnow()
+                        updated += 1
+                    else:
+                        stock = Stock(
+                            symbol=symbol,
+                            name=name,
+                            market_type="上櫃",
+                            is_active=True,
+                            is_suspended=False,
+                        )
+                        self.db.add(stock)
+                        added += 1
+
+                except Exception as e:
+                    logger.error(f"處理上櫃股票失敗 {item}: {e}")
+                    failed += 1
+
+            await self.db.commit()
+            logger.info(f"上櫃股票同步完成: 新增 {added}, 更新 {updated}, 失敗 {failed}")
+
+        except Exception as e:
+            logger.error(f"同步上櫃股票失敗: {e}")
+            await self.db.rollback()
+
+        return added, updated, failed
+
     # ==================== 實時行情 ====================
     
     async def fetch_quote_from_twse(self, symbol: str) -> Optional[Dict]:
@@ -141,7 +280,7 @@ class StockService:
             
             result = await self.db.execute(stmt)
             klines = result.scalars().all()
-            return list(reversed(klines))  # 按時間升序返回
+            return list(reversed(klines))
         
         except Exception as e:
             logger.error(f"獲取 K線失敗 {symbol}: {e}")
@@ -150,7 +289,6 @@ class StockService:
     async def save_kline(self, kline_data: Dict) -> Optional[KlineDaily]:
         """保存 K線資料"""
         try:
-            # 檢查是否已存在
             stmt = select(KlineDaily).where(
                 and_(
                     KlineDaily.symbol == kline_data["symbol"],
@@ -161,12 +299,10 @@ class StockService:
             existing = result.scalar_one_or_none()
             
             if existing:
-                # 更新現有記錄
                 for key, value in kline_data.items():
                     setattr(existing, key, value)
                 kline = existing
             else:
-                # 建立新記錄
                 kline = KlineDaily(**kline_data)
                 self.db.add(kline)
             
@@ -183,7 +319,6 @@ class StockService:
     async def create_stock(self, stock_data: Dict) -> Optional[Stock]:
         """建立新股票"""
         try:
-            # 檢查是否已存在
             existing = await self.get_stock_by_symbol(stock_data["symbol"])
             if existing:
                 logger.warning(f"股票已存在: {stock_data['symbol']}")
@@ -245,7 +380,6 @@ class StockService:
             gain = end_price - start_price
             gain_percent = (gain / start_price * 100) if start_price > 0 else 0
             
-            # 計算波動率
             daily_returns = []
             for i in range(1, len(klines)):
                 prev_close = float(klines[i-1].close)
@@ -273,8 +407,6 @@ class StockService:
             logger.error(f"計算績效失敗 {symbol}: {e}")
             return None
 
-
-# ==================== 工廠函數 ====================
 
 async def get_stock_service(db: AsyncSession) -> StockService:
     """取得股票服務實例"""
