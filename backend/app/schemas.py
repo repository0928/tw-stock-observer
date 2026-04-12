@@ -45,6 +45,17 @@ class StockResponse(StockBase):
     updated_at: datetime
     is_active: bool
     is_suspended: bool
+    eps: Optional[Decimal] = None
+    pe_ratio: Optional[Decimal] = None
+    pb_ratio: Optional[Decimal] = None
+    close_price: Optional[Decimal] = None
+    open_price: Optional[Decimal] = None
+    high_price: Optional[Decimal] = None
+    low_price: Optional[Decimal] = None
+    change_amount: Optional[Decimal] = None
+    change_percent: Optional[Decimal] = None
+    volume: Optional[int] = None
+    trade_date: Optional[str] = None
     
     class Config:
         from_attributes = True
