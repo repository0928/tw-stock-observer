@@ -47,7 +47,7 @@ function App() {
       // 從前端 URL 推斷後端 URL
       // 假設後端也在同一個 Zeabur 項目中
       // 可以使用相同的域名但走不同的埠或路徑
-      return `${protocol}//tw-stock-observer-v1.zeabur.app/api`
+      return `https://tw-stock-observer-01-b.zeabur.app/api`
     }
     
     // 其他情況下使用相同的主機名
