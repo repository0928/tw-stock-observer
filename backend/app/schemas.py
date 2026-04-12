@@ -60,7 +60,6 @@ class StockResponse(StockBase):
     class Config:
         from_attributes = True
 
-
 class StockQuoteResponse(BaseModel):
     """股票行情回應 Schema"""
     symbol: str
