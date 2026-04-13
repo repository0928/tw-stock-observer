@@ -150,17 +150,22 @@ async def list_stocks(
 ) -> dict:
     """獲取股票列表"""
     try:
+        from sqlalchemy import func
         service = StockService(db)
         stocks = await service.get_all_stocks(skip=skip, limit=limit)
         
+        # 查詢總數
+        count_stmt = select(func.count()).select_from(Stock).where(Stock.is_active == True)
+        count_result = await db.execute(count_stmt)
+        total_count = count_result.scalar()
+        
         stocks_data = [StockResponse.from_orm(stock).dict() for stock in stocks]
         
-        return {"total": len(stocks_data), "skip": skip, "limit": limit, "stocks": stocks_data}
+        return {"total": total_count, "skip": skip, "limit": limit, "stocks": stocks_data}
     
     except Exception as e:
         logger.error(f"獲取股票列表失敗: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
-
 
 @router.get("/search/{keyword}")
 async def search_stocks(
