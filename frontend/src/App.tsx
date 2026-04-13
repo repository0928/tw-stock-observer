@@ -35,6 +35,9 @@ function App() {
   const [marketFilter, setMarketFilter] = useState('')
   const [sectorFilter, setSectorFilter] = useState('')
   const [sectors, setSectors] = useState<string[]>([])
+  const [sortKey, setSortKey] = useState<string>('')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
 
   // 載入產業列表
   useEffect(() => {
@@ -123,6 +126,19 @@ function App() {
     return '#aaa'
   }
 
+  const sortedStocks = [...stocks].sort((a, b) => {
+    if (!sortKey) return 0
+    const va = a[sortKey as keyof Stock]
+    const vb = b[sortKey as keyof Stock]
+    if (va == null && vb == null) return 0
+    if (va == null) return 1
+    if (vb == null) return -1
+    const na = typeof va === 'string' ? parseFloat(va) : Number(va)
+    const nb = typeof vb === 'string' ? parseFloat(vb) : Number(vb)
+    if (!isNaN(na) && !isNaN(nb)) return sortDir === 'asc' ? na - nb : nb - na
+    return sortDir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
+  })
+
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   const btnStyle = (active: boolean) => ({
@@ -201,15 +217,40 @@ function App() {
               }}>
                 <thead>
                   <tr style={{ background: 'rgba(255,255,255,0.08)', color: '#ccc' }}>
-                    {['股號','股名','市場','產業','收盤','漲跌','漲跌幅%','開盤','最高','最低','成交量(千)','EPS','本益比','淨值比'].map(h => (
-                      <th key={h} style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 500 }}>
-                        {h}
-                      </th>
-                    ))}
+                    {[
+  { label: '股號', key: 'symbol' },
+  { label: '股名', key: 'name' },
+  { label: '市場', key: 'market_type' },
+  { label: '產業', key: 'sector' },
+  { label: '收盤', key: 'close_price' },
+  { label: '漲跌', key: 'change_amount' },
+  { label: '漲跌幅%', key: 'change_percent' },
+  { label: '開盤', key: 'open_price' },
+  { label: '最高', key: 'high_price' },
+  { label: '最低', key: 'low_price' },
+  { label: '成交量(千)', key: 'volume' },
+  { label: 'EPS', key: 'eps' },
+  { label: '本益比', key: 'pe_ratio' },
+  { label: '淨值比', key: 'pb_ratio' },
+].map(({ label, key }) => (
+  <th key={key}
+    onClick={() => {
+      if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+      else { setSortKey(key); setSortDir('desc') }
+    }}
+    style={{
+      padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap',
+      fontWeight: 500, cursor: 'pointer', userSelect: 'none',
+      color: sortKey === key ? '#f90' : '#ccc',
+    }}
+  >
+    {label} {sortKey === key ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+  </th>
+))}
                   </tr>
                 </thead>
                 <tbody>
-                  {stocks.map((s, i) => (
+                  {sortedStocks.map((s, i) => (
                     <tr key={s.symbol} style={{
                       background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)',
                       borderBottom: '1px solid rgba(255,255,255,0.05)',
