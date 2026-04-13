@@ -1,5 +1,4 @@
 """
-股票 API 路由
 Stock API Endpoints
 """
 
@@ -8,7 +7,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, distinct
 from app.database import get_db
 from app.schemas import StockResponse, StockQuoteResponse, KlineDailyResponse
 from app.models import Stock
@@ -33,13 +32,7 @@ async def sync_stocks(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    從台灣證交所與櫃買中心同步所有上市/上櫃股票清單
-    
-    - 自動新增尚未存在的股票
-    - 自動更新已存在股票的名稱與市場別
-    - 背景執行，立即回傳確認訊息
-    """
+    """從台灣證交所與櫃買中心同步所有上市/上櫃股票清單"""
     try:
         service = StockService(db)
         result = await service.sync_stocks_from_twse()
@@ -51,6 +44,87 @@ async def sync_stocks(
     except Exception as e:
         logger.error(f"同步股票失敗: {e}")
         raise HTTPException(status_code=500, detail=f"同步失敗: {str(e)}")
+
+
+# ==================== 股票列表端點 ====================
+
+@router.get("/sectors")
+async def list_sectors(db: AsyncSession = Depends(get_db)) -> dict:
+    """取得所有產業列表"""
+    try:
+        stmt = select(distinct(Stock.sector)).where(
+            Stock.is_active == True,
+            Stock.sector != None
+        ).order_by(Stock.sector)
+        result = await db.execute(stmt)
+        sectors = [row[0] for row in result.fetchall() if row[0]]
+        return {"sectors": sectors}
+    except Exception as e:
+        logger.error(f"獲取產業列表失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("")
+async def list_stocks(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    market_type: Optional[str] = None,
+    sector: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """獲取股票列表"""
+    try:
+        conditions = [Stock.is_active == True]
+        if market_type:
+            conditions.append(Stock.market_type == market_type)
+        if sector:
+            conditions.append(Stock.sector == sector)
+
+        count_stmt = select(func.count()).select_from(Stock).where(*conditions)
+        count_result = await db.execute(count_stmt)
+        total_count = count_result.scalar()
+
+        stmt = (
+            select(Stock)
+            .where(*conditions)
+            .order_by(Stock.symbol)
+            .offset(skip)
+            .limit(limit)
+        )
+        result = await db.execute(stmt)
+        stocks = result.scalars().all()
+
+        stocks_data = [StockResponse.from_orm(stock).dict() for stock in stocks]
+
+        return {"total": total_count, "skip": skip, "limit": limit, "stocks": stocks_data}
+
+    except Exception as e:
+        logger.error(f"獲取股票列表失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/search/{keyword}")
+async def search_stocks(
+    keyword: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """搜尋股票"""
+    try:
+        if len(keyword) < 1:
+            raise HTTPException(status_code=400, detail="搜尋關鍵字不能為空")
+
+        service = StockService(db)
+        stocks = await service.search_stocks(keyword)
+
+        stocks_data = [StockResponse.from_orm(stock).dict() for stock in stocks]
+
+        return {"keyword": keyword, "count": len(stocks_data), "stocks": stocks_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"搜尋股票失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
 
 
 # ==================== 股票查詢端點 ====================
@@ -66,13 +140,13 @@ async def get_stock_quote(
         stock = await service.get_stock_by_symbol(symbol)
         if not stock:
             raise HTTPException(status_code=404, detail=f"股票不存在: {symbol}")
-        
+
         quote = await service.fetch_quote_from_twse(symbol)
         if not quote:
             raise HTTPException(status_code=500, detail=f"無法獲取股票行情: {symbol}")
-        
+
         return quote
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -89,12 +163,12 @@ async def get_stock_info(
     try:
         service = StockService(db)
         stock = await service.get_stock_by_symbol(symbol)
-        
+
         if not stock:
             raise HTTPException(status_code=404, detail=f"股票不存在: {symbol}")
-        
+
         return StockResponse.from_orm(stock)
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -117,7 +191,7 @@ async def get_stock_klines(
         stock = await service.get_stock_by_symbol(symbol)
         if not stock:
             raise HTTPException(status_code=404, detail=f"股票不存在: {symbol}")
-        
+
         klines = await service.get_klines(
             symbol=symbol,
             period=period,
@@ -125,103 +199,20 @@ async def get_stock_klines(
             start_date=start_date,
             end_date=end_date,
         )
-        
+
         if not klines:
             return {"symbol": symbol, "period": period, "klines": [], "message": "尚無 K線資料"}
-        
+
         klines_data = [KlineDailyResponse.from_orm(kline).dict() for kline in klines]
-        
+
         return {"symbol": symbol, "period": period, "count": len(klines_data), "klines": klines_data}
-    
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"獲取 K線失敗: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
 
-
-# ==================== 股票列表端點 ====================
-
-@router.get("")
-async def list_stocks(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
-    market_type: Optional[str] = None,
-    sector: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """獲取股票列表"""
-    try:
-        from sqlalchemy import func
-        
-        # 建立查詢條件
-        conditions = [Stock.is_active == True]
-        if market_type:
-            conditions.append(Stock.market_type == market_type)
-        if sector:
-            conditions.append(Stock.sector == sector)
-        
-        # 查詢總數
-        count_stmt = select(func.count()).select_from(Stock).where(*conditions)
-        count_result = await db.execute(count_stmt)
-        total_count = count_result.scalar()
-        
-        # 查詢資料
-        stmt = (
-            select(Stock)
-            .where(*conditions)
-            .order_by(Stock.symbol)
-            .offset(skip)
-            .limit(limit)
-        )
-        result = await db.execute(stmt)
-        stocks = result.scalars().all()
-        
-        stocks_data = [StockResponse.from_orm(stock).dict() for stock in stocks]
-        
-        return {"total": total_count, "skip": skip, "limit": limit, "stocks": stocks_data}
-    
-    except Exception as e:
-        logger.error(f"獲取股票列表失敗: {e}")
-        raise HTTPException(status_code=500, detail="伺服器錯誤")
-"""取得所有產業列表"""
-    try:
-        from sqlalchemy import distinct
-        stmt = select(distinct(Stock.sector)).where(
-            Stock.is_active == True,
-            Stock.sector != None
-        ).order_by(Stock.sector)
-        result = await db.execute(stmt)
-        sectors = [row[0] for row in result.fetchall() if row[0]]
-        return {"sectors": sectors}
-    except Exception as e:
-        logger.error(f"獲取產業列表失敗: {e}")
-        raise HTTPException(status_code=500, detail="伺服器錯誤")
-@router.get("/search/{keyword}")
-async def search_stocks(
-    keyword: str,
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """搜尋股票"""
-    try:
-        if len(keyword) < 1:
-            raise HTTPException(status_code=400, detail="搜尋關鍵字不能為空")
-        
-        service = StockService(db)
-        stocks = await service.search_stocks(keyword)
-        
-        stocks_data = [StockResponse.from_orm(stock).dict() for stock in stocks]
-        
-        return {"keyword": keyword, "count": len(stocks_data), "stocks": stocks_data}
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"搜尋股票失敗: {e}")
-        raise HTTPException(status_code=500, detail="伺服器錯誤")
-
-
-# ==================== 績效分析端點 ====================
 
 @router.get("/{symbol}/performance")
 async def get_stock_performance(
@@ -236,16 +227,16 @@ async def get_stock_performance(
         stock = await service.get_stock_by_symbol(symbol)
         if not stock:
             raise HTTPException(status_code=404, detail=f"股票不存在: {symbol}")
-        
+
         performance = await service.calculate_stock_performance(
             symbol=symbol, start_date=start_date, end_date=end_date,
         )
-        
+
         if not performance:
             raise HTTPException(status_code=400, detail="無法計算績效，可能缺少足夠的 K線資料")
-        
+
         return performance
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -253,27 +244,11 @@ async def get_stock_performance(
         raise HTTPException(status_code=500, detail="伺服器錯誤")
 
 
-# ==================== 健康檢查 ====================
-
 @router.get("/health/check")
 async def health_check() -> dict:
     """股票 API 健康檢查"""
     return {"status": "healthy", "service": "stocks"}
 
-@router.get("/sectors")
-async def list_sectors(db: AsyncSession = Depends(get_db)) -> dict:
-    """取得所有產業列表"""
-    try:
-        from sqlalchemy import distinct
-        stmt = select(distinct(Stock.sector)).where(
-            Stock.is_active == True,
-            Stock.sector != None
-        ).order_by(Stock.sector)
-        result = await db.execute(stmt)
-        sectors = [row[0] for row in result.fetchall() if row[0]]
-        return {"sectors": sectors}
-    except Exception as e:
-        logger.error(f"獲取產業列表失敗: {e}")
-        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
 if __name__ == "__main__":
     print("✅ 股票 API 路由已載入")
