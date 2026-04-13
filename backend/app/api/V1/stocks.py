@@ -146,18 +146,36 @@ async def get_stock_klines(
 async def list_stocks(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
+    market_type: Optional[str] = None,
+    sector: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """獲取股票列表"""
     try:
         from sqlalchemy import func
-        service = StockService(db)
-        stocks = await service.get_all_stocks(skip=skip, limit=limit)
+        
+        # 建立查詢條件
+        conditions = [Stock.is_active == True]
+        if market_type:
+            conditions.append(Stock.market_type == market_type)
+        if sector:
+            conditions.append(Stock.sector == sector)
         
         # 查詢總數
-        count_stmt = select(func.count()).select_from(Stock).where(Stock.is_active == True)
+        count_stmt = select(func.count()).select_from(Stock).where(*conditions)
         count_result = await db.execute(count_stmt)
         total_count = count_result.scalar()
+        
+        # 查詢資料
+        stmt = (
+            select(Stock)
+            .where(*conditions)
+            .order_by(Stock.symbol)
+            .offset(skip)
+            .limit(limit)
+        )
+        result = await db.execute(stmt)
+        stocks = result.scalars().all()
         
         stocks_data = [StockResponse.from_orm(stock).dict() for stock in stocks]
         
@@ -166,7 +184,19 @@ async def list_stocks(
     except Exception as e:
         logger.error(f"獲取股票列表失敗: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
-
+"""取得所有產業列表"""
+    try:
+        from sqlalchemy import distinct
+        stmt = select(distinct(Stock.sector)).where(
+            Stock.is_active == True,
+            Stock.sector != None
+        ).order_by(Stock.sector)
+        result = await db.execute(stmt)
+        sectors = [row[0] for row in result.fetchall() if row[0]]
+        return {"sectors": sectors}
+    except Exception as e:
+        logger.error(f"獲取產業列表失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
 @router.get("/search/{keyword}")
 async def search_stocks(
     keyword: str,
