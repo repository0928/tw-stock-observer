@@ -260,6 +260,20 @@ async def health_check() -> dict:
     """股票 API 健康檢查"""
     return {"status": "healthy", "service": "stocks"}
 
-
+@router.get("/sectors")
+async def list_sectors(db: AsyncSession = Depends(get_db)) -> dict:
+    """取得所有產業列表"""
+    try:
+        from sqlalchemy import distinct
+        stmt = select(distinct(Stock.sector)).where(
+            Stock.is_active == True,
+            Stock.sector != None
+        ).order_by(Stock.sector)
+        result = await db.execute(stmt)
+        sectors = [row[0] for row in result.fetchall() if row[0]]
+        return {"sectors": sectors}
+    except Exception as e:
+        logger.error(f"獲取產業列表失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
 if __name__ == "__main__":
     print("✅ 股票 API 路由已載入")
