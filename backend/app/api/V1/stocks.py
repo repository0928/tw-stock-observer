@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from sqlalchemy import select, func
 from app.database import get_db
 from app.schemas import StockResponse, StockQuoteResponse, KlineDailyResponse
 from app.models import Stock
