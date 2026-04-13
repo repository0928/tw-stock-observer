@@ -102,7 +102,18 @@ class Stock(BaseModel):
     suspension_reason = Column(String(255))
     
     financial_data_updated_at = Column(DateTime(timezone=True))
-    
+    # 當日行情
+    close_price = Column(DECIMAL(10, 2))
+    open_price = Column(DECIMAL(10, 2))
+    high_price = Column(DECIMAL(10, 2))
+    low_price = Column(DECIMAL(10, 2))
+    change_amount = Column(DECIMAL(10, 2))
+    change_percent = Column(DECIMAL(8, 2))
+    volume = Column(BIGINT)
+    trade_date = Column(String(10))    
+
+
+
     # 關係
     klines = relationship("KlineDaily", back_populates="stock", cascade="all, delete-orphan")
     
