@@ -193,12 +193,12 @@ function App() {
                 </button>
 
                 {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                  let p = page - 2 + i
-                  if (p < 1) p = i + 1
-                  if (p > totalPages) p = totalPages - (4 - i)
-                  if (p < 1) return null
-                  return (
-                    <button key={p} onClick={() => handlePage(p)}
+  			let start = Math.max(1, page - 2)
+  			if (start + 4 > totalPages) start = Math.max(1, totalPages - 4)
+  			const p = start + i
+  			if (p > totalPages) return null
+  			return (
+    				<button key={p} onClick={() => handlePage(p)}
                       style={{ padding: '6px 12px', background: p === page ? '#f90' : 'rgba(255,255,255,0.1)', color: p === page ? '#000' : '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: p === page ? 700 : 400 }}>
                       {p}
                     </button>
