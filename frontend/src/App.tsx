@@ -56,16 +56,18 @@ function App() {
     else if (val.length >= 1) fetchStocks(val)
   }
 
-  const fmt = (n?: number, digits = 2) =>
-    n != null ? n.toFixed(digits) : '--'
-
-  const changeColor = (n?: number) => {
-    if (n == null) return '#aaa'
-    if (n > 0) return '#ff4d4d'
-    if (n < 0) return '#33cc66'
-    return '#aaa'
-  }
-
+const fmt = (n?: number | string, digits = 2) => {
+  if (n == null) return '--'
+  const num = typeof n === 'string' ? parseFloat(n) : n
+  return isNaN(num) ? '--' : num.toFixed(digits)
+}
+const changeColor = (n?: number | string) => {
+  if (n == null) return '#aaa'
+  const num = typeof n === 'string' ? parseFloat(n) : n
+  if (num > 0) return '#ff4d4d'
+  if (num < 0) return '#33cc66'
+  return '#aaa'
+}
   return (
     <div className="app">
       <header className="app-header">
