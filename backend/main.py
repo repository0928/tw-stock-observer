@@ -175,6 +175,56 @@ async def sync_pe_job():
     except Exception as e:
         logger.error(f"❌ 自動同步本益比失敗: {e}")
 
+async def sync_eps_job():
+    """每月自動同步 EPS、營收、淨利"""
+    logger.info("⏰ 開始自動同步 EPS...")
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        urls = [
+            "https://openapi.twse.com.tw/v1/opendata/t187ap14_L",
+            "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap14_O",
+        ]
+
+        all_data = []
+        for url in urls:
+            with urllib.request.urlopen(url, context=ctx, timeout=30) as resp:
+                all_data.extend(json.loads(resp.read().decode('utf-8')))
+
+        async for db in get_db():
+            updated = 0
+            for item in all_data:
+                symbol = item.get("公司代號", item.get("SecuritiesCompanyCode", "")).strip()
+                if not symbol.isdigit():
+                    continue
+                try:
+                    eps_str = item.get("基本每股盈餘(元)", item.get("基本每股盈餘", "")).strip()
+                    eps = float(eps_str) if eps_str not in ("", "--", "N/A") else None
+                    revenue_str = item.get("營業收入", "").strip()
+                    revenue = int(float(revenue_str)) if revenue_str not in ("", "--") else None
+                    net_income_str = item.get("稅後淨利", "").strip()
+                    net_income = int(float(net_income_str)) if net_income_str not in ("", "--") else None
+
+                    stmt = select(Stock).where(Stock.symbol == symbol)
+                    result = await db.execute(stmt)
+                    stock = result.scalar_one_or_none()
+                    if stock:
+                        stock.eps = eps
+                        stock.revenue = revenue
+                        stock.net_income = net_income
+                        stock.updated_at = datetime.utcnow()
+                        updated += 1
+                except Exception as e:
+                    logger.error(f"更新 EPS {symbol} 失敗: {e}")
+
+            await db.commit()
+            logger.info(f"✅ EPS 同步完成: {updated} 筆")
+            break
+
+    except Exception as e:
+        logger.error(f"❌ 自動同步 EPS 失敗: {e}")
 
 # ==================== 應用生命週期 ====================
 
@@ -211,6 +261,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         sync_pe_job,
         CronTrigger(hour=9, minute=0, timezone="UTC"),  # UTC 9:00 = 台灣 17:00
         id="sync_pe",
+        replace_existing=True,
+    )
+
+    # 每月11日早上同步 EPS（財報每季更新）
+    scheduler.add_job(
+        sync_eps_job,
+        CronTrigger(day=11, hour=2, minute=0, timezone="UTC"),
+        id="sync_eps",
         replace_existing=True,
     )
 
