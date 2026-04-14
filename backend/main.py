@@ -126,6 +126,55 @@ async def sync_sectors_job():
     except Exception as e:
         logger.error(f"❌ 自動同步產業失敗: {e}")
 
+async def sync_pe_job():
+    """每日自動同步本益比、淨值比"""
+    logger.info("⏰ 開始自動同步本益比...")
+    try:
+        import ssl
+        import urllib.request
+        import json
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        url = "https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_d?response=json"
+        with urllib.request.urlopen(url, context=ctx, timeout=30) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+
+        rows = data.get("data", [])
+
+        async for db in get_db():
+            updated = 0
+            for row in rows:
+                symbol = row[0].strip()
+                if not symbol.isdigit():
+                    continue
+                try:
+                    def safe_float(val):
+                        v = val.replace(",", "").strip()
+                        return float(v) if v not in ('-', '--', '', 'N/A') else None
+                    
+                    pe = safe_float(row[5])
+                    pb = safe_float(row[6])
+                    
+                    stmt = select(Stock).where(Stock.symbol == symbol)
+                    result = await db.execute(stmt)
+                    stock = result.scalar_one_or_none()
+                    if stock:
+                        stock.pe_ratio = pe
+                        stock.pb_ratio = pb
+                        stock.updated_at = datetime.utcnow()
+                        updated += 1
+                except Exception as e:
+                    logger.error(f"更新本益比 {symbol} 失敗: {e}")
+            
+            await db.commit()
+            logger.info(f"✅ 本益比同步完成: {updated} 筆")
+            break
+
+    except Exception as e:
+        logger.error(f"❌ 自動同步本益比失敗: {e}")
+
 
 # ==================== 應用生命週期 ====================
 
@@ -154,6 +203,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         sync_sectors_job,
         CronTrigger(day_of_week="mon", hour=1, minute=0, timezone="UTC"),
         id="sync_sectors",
+        replace_existing=True,
+    )
+
+    # 每天下午 5:00 同步本益比（收盤後）
+    scheduler.add_job(
+        sync_pe_job,
+        CronTrigger(hour=9, minute=0, timezone="UTC"),  # UTC 9:00 = 台灣 17:00
+        id="sync_pe",
         replace_existing=True,
     )
 
