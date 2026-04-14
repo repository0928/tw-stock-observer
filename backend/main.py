@@ -1,47 +1,173 @@
 """
-台股觀測站 - FastAPI 應用入點
-Taiwan Stock Observer - Main Application Entry Point
+台股觀測站 - FastAPI 應用入口點
 """
-
 import logging
+import ssl
+import urllib.request
+import json
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+from datetime import datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from app.config import settings
 from app.database import engine, init_db, get_db
 from app.api.V1 import stocks
+from app.models import Stock
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
-# 配置日誌
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ==================== 同步函數 ====================
+
+async def sync_quotes_job():
+    """每日自動同步行情"""
+    logger.info("⏰ 開始自動同步行情...")
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        # 上市行情
+        url = "https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=json"
+        with urllib.request.urlopen(url, context=ctx, timeout=30) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        
+        rows = data.get("data", [])
+        trade_date = data.get("date", "")
+
+        async for db in get_db():
+            updated = 0
+            for row in rows:
+                symbol = row[0].strip()
+                if not symbol.isdigit():
+                    continue
+                try:
+                    def parse(val):
+                        v = val.replace(",", "").strip()
+                        return float(v) if v not in ("--", "", "X") else None
+
+                    close = parse(row[7])
+                    change_str = row[8].replace(",", "").replace("+", "").strip()
+                    change = float(change_str) if change_str not in ("--", "", "X") else None
+                    change_pct = round(change / (close - change) * 100, 2) if change and close and (close - change) != 0 else None
+
+                    stmt = select(Stock).where(Stock.symbol == symbol)
+                    result = await db.execute(stmt)
+                    stock = result.scalar_one_or_none()
+                    if stock:
+                        stock.open_price = parse(row[4])
+                        stock.high_price = parse(row[5])
+                        stock.low_price = parse(row[6])
+                        stock.close_price = close
+                        stock.change_amount = change
+                        stock.change_percent = change_pct
+                        vol = row[2].replace(",", "")
+                        stock.volume = int(vol) if vol.isdigit() else None
+                        stock.trade_date = trade_date
+                        stock.updated_at = datetime.utcnow()
+                        updated += 1
+                except Exception as e:
+                    logger.error(f"更新 {symbol} 失敗: {e}")
+
+            await db.commit()
+            logger.info(f"✅ 上市行情同步完成: {updated} 筆")
+            break
+
+    except Exception as e:
+        logger.error(f"❌ 自動同步行情失敗: {e}")
+
+
+async def sync_sectors_job():
+    """每週自動同步產業分類"""
+    logger.info("⏰ 開始自動同步產業...")
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
+        with urllib.request.urlopen(url, context=ctx, timeout=30) as resp:
+            content = resp.read().decode('big5', errors='ignore')
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(content, 'lxml')
+
+        async for db in get_db():
+            updated = 0
+            for row in soup.find_all('tr'):
+                cols = row.find_all('td')
+                if len(cols) < 5:
+                    continue
+                code_name = cols[0].text.strip()
+                sector = cols[4].text.strip()
+                if '\u3000' in code_name and sector:
+                    symbol = code_name.split('\u3000')[0].strip()
+                    if symbol.isdigit():
+                        stmt = select(Stock).where(Stock.symbol == symbol)
+                        result = await db.execute(stmt)
+                        stock = result.scalar_one_or_none()
+                        if stock:
+                            stock.sector = sector
+                            stock.updated_at = datetime.utcnow()
+                            updated += 1
+            await db.commit()
+            logger.info(f"✅ 產業同步完成: {updated} 筆")
+            break
+
+    except Exception as e:
+        logger.error(f"❌ 自動同步產業失敗: {e}")
+
+
+# ==================== 應用生命週期 ====================
+
+scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator:
-    """
-    應用生命週期管理
-    - 啟動：初始化資料庫
-    - 關閉：清理資源
-    """
     logger.info("🚀 應用啟動中...")
-    
-    # 啟動事件：初始化資料庫
+
     try:
         await init_db()
         logger.info("✅ 資料庫初始化成功")
     except Exception as e:
         logger.error(f"❌ 資料庫初始化失敗: {e}")
-    
+
+    # 設定排程：每天下午 4:30 同步行情（台股收盤後）
+    scheduler.add_job(
+        sync_quotes_job,
+        CronTrigger(hour=8, minute=30, timezone="UTC"),  # UTC 8:30 = 台灣 16:30
+        id="sync_quotes",
+        replace_existing=True,
+    )
+
+    # 每週一早上同步產業分類
+    scheduler.add_job(
+        sync_sectors_job,
+        CronTrigger(day_of_week="mon", hour=1, minute=0, timezone="UTC"),
+        id="sync_sectors",
+        replace_existing=True,
+    )
+
+    scheduler.start()
+    logger.info("✅ 排程器已啟動（每日 16:30 台灣時間同步行情）")
+
     yield
-    
+
+    scheduler.shutdown()
     logger.info("🛑 應用關閉中...")
 
 
-# 建立 FastAPI 應用
+# ==================== 建立應用 ====================
+
 app = FastAPI(
     title="台股觀測站 API",
     description="台灣股票市場監測和投資組合管理平台",
@@ -49,13 +175,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
-# 配置 CORS（跨域資源共享）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",  # 本地開發
-        "http://localhost:3000",   # 備用開發埠
+        "http://localhost:5173",
+        "http://localhost:3000",
         "http://127.0.0.1:5173",
         "http://127.0.0.1:3000",
     ] if settings.DEBUG else settings.CORS_ORIGINS.split(","),
@@ -64,42 +188,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# 包含路由
 app.include_router(stocks.router, prefix="/api/v1", tags=["stocks"])
 
 
-# API 文檔自訂
 def custom_openapi():
-    """自訂 OpenAPI 文檔"""
     if app.openapi_schema:
         return app.openapi_schema
-    
     openapi_schema = get_openapi(
         title="台股觀測站 API",
         version="1.0.0",
         description="完整的台灣股票市場 API",
         routes=app.routes,
     )
-    
-    openapi_schema["info"]["x-logo"] = {
-        "url": "https://fastapi.tiangolo.com/img/logo-margin/logo-teal.png"
-    }
-    
     app.openapi_schema = openapi_schema
     return app.openapi_schema
-
 
 app.openapi = custom_openapi
 
 
-# 健康檢查端點
 @app.get("/health")
 async def health_check() -> dict:
-    """
-    健康檢查端點
-    用於監控應用是否正常執行
-    """
     return {
         "status": "healthy",
         "app": "台股觀測站",
@@ -108,10 +216,8 @@ async def health_check() -> dict:
     }
 
 
-# 根路由
 @app.get("/")
 async def root() -> dict:
-    """根路由 - API 說明"""
     return {
         "message": "歡迎使用台股觀測站 API",
         "documentation": "/docs",
@@ -121,21 +227,8 @@ async def root() -> dict:
     }
 
 
-# 全局異常處理
-@app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    """全局異常處理"""
-    logger.error(f"未捕獲的異常: {exc}", exc_info=True)
-    return {
-        "detail": "伺服器內部錯誤",
-        "status_code": 500,
-    }
-
-
 if __name__ == "__main__":
     import uvicorn
-    
-    # 啟動開發伺服器
     uvicorn.run(
         "main:app",
         host=settings.API_HOST,
