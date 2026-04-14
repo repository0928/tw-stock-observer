@@ -1,0 +1,11 @@
+FROM node:18-alpine AS builder
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm install
+COPY frontend/ .
+RUN npm run build
+
+FROM caddy:alpine
+COPY --from=builder /app/dist /usr/share/caddy
+RUN printf ':8080 {\n    root * /usr/share/caddy\n    file_server\n    try_files {path} /index.html\n}\n' > /etc/caddy/Caddyfile
+EXPOSE 8080
