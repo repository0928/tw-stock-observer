@@ -17,6 +17,8 @@ interface Stock {
   eps?: number | string
   pe_ratio?: number | string
   pb_ratio?: number | string
+  revenue?: number | string
+  net_income?: number | string
 }
 
 const API_URL = window.location.hostname.includes('zeabur.app')
@@ -40,6 +42,8 @@ const COLUMNS = [
   { label: 'EPS', key: 'eps' },
   { label: '本益比', key: 'pe_ratio' },
   { label: '淨值比', key: 'pb_ratio' },
+  { label: '營收(千)', key: 'revenue' },
+  { label: '淨利(千)', key: 'net_income' },
 ]
 
 function App() {
@@ -143,11 +147,28 @@ function App() {
     return (num > 0 ? '+' : '') + num.toFixed(2)
   }
 
+  // 大數字格式化：以千為單位顯示，加千分位
+  const fmtThousands = (n?: number | string) => {
+    if (n == null) return '--'
+    const num = typeof n === 'string' ? parseFloat(n) : Number(n)
+    if (isNaN(num)) return '--'
+    return Math.round(num / 1000).toLocaleString()
+  }
+
   const changeColor = (n?: number | string) => {
     if (n == null) return '#aaa'
     const num = typeof n === 'string' ? parseFloat(n) : n
     if (num > 0) return '#ff4d4d'
     if (num < 0) return '#33cc66'
+    return '#aaa'
+  }
+
+  const netIncomeColor = (n?: number | string) => {
+    if (n == null) return '#aaa'
+    const num = typeof n === 'string' ? parseFloat(n) : Number(n)
+    if (isNaN(num)) return '#aaa'
+    if (num > 0) return '#51cf66'
+    if (num < 0) return '#ff6b6b'
     return '#aaa'
   }
 
@@ -239,10 +260,12 @@ function App() {
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#ccc' }}>{fmt(s.open_price)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#ff6b6b' }}>{fmt(s.high_price)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#51cf66' }}>{fmt(s.low_price)}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: '#aaa' }}>{s.volume != null ? Math.round(Number(s.volume) / 1000).toLocaleString() : '--'}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: '#aaa' }}>{fmtThousands(s.volume)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#ccc' }}>{fmt(s.eps)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#ccc' }}>{fmt(s.pe_ratio)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: '#ccc' }}>{fmt(s.pb_ratio)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: '#ccc' }}>{fmtThousands(s.revenue)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: netIncomeColor(s.net_income) }}>{fmtThousands(s.net_income)}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -36,6 +36,8 @@ class StockUpdate(BaseModel):
     eps: Optional[Decimal] = None
     pe_ratio: Optional[Decimal] = None
     pb_ratio: Optional[Decimal] = None
+    revenue: Optional[int] = None
+    net_income: Optional[int] = None
 
 
 class StockResponse(StockBase):
@@ -45,7 +47,20 @@ class StockResponse(StockBase):
     updated_at: datetime
     is_active: bool
     is_suspended: bool
-    
+    eps: Optional[Decimal] = None
+    pe_ratio: Optional[Decimal] = None
+    pb_ratio: Optional[Decimal] = None
+    revenue: Optional[int] = None
+    net_income: Optional[int] = None
+    close_price: Optional[Decimal] = None
+    open_price: Optional[Decimal] = None
+    high_price: Optional[Decimal] = None
+    low_price: Optional[Decimal] = None
+    change_amount: Optional[Decimal] = None
+    change_percent: Optional[Decimal] = None
+    volume: Optional[int] = None
+    trade_date: Optional[str] = None
+
     class Config:
         from_attributes = True
 
@@ -95,7 +110,7 @@ class KlineDailyResponse(KlineDailyBase):
     sma_50: Optional[Decimal] = None
     sma_200: Optional[Decimal] = None
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -113,7 +128,7 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     """建立使用者 Schema"""
     password: str = Field(..., min_length=8)
-    
+
     @field_validator("password")
     def password_strong(cls, v):
         """驗證密碼強度"""
@@ -139,7 +154,7 @@ class UserResponse(UserBase):
     status: str
     created_at: datetime
     last_login_at: Optional[datetime] = None
-    
+
     class Config:
         from_attributes = True
 
@@ -182,7 +197,7 @@ class PortfolioHoldingResponse(BaseModel):
     gain: Optional[Decimal] = None
     gain_percent: Optional[Decimal] = None
     status: str
-    
+
     class Config:
         from_attributes = True
 
@@ -199,7 +214,7 @@ class PortfolioResponse(PortfolioBase):
     created_at: datetime
     updated_at: datetime
     holdings: List[PortfolioHoldingResponse] = []
-    
+
     class Config:
         from_attributes = True
 
@@ -244,7 +259,7 @@ class TransactionResponse(TransactionBase):
     status: str
     execution_date: Optional[datetime] = None
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -273,7 +288,7 @@ class AlertResponse(AlertBase):
     is_triggered: bool
     last_triggered_at: Optional[datetime] = None
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
