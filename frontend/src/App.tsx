@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import './index.css'
 
 interface Stock {
@@ -19,11 +19,10 @@ interface Stock {
   pb_ratio?: number | string
   revenue?: number | string
   net_income?: number | string
+  trade_date?: string
 }
 
-const API_URL = window.location.hostname.includes('zeabur.app')
-  ? 'https://tw-stock-observer-01-b.zeabur.app/api'
-  : 'http://localhost:8000/api'
+const API_URL = (import.meta.env.VITE_API_URL as string) || 'http://localhost:8000/api'
 
 const PAGE_SIZE = 50
 
@@ -58,6 +57,8 @@ function App() {
   const [sectors, setSectors] = useState<string[]>([])
   const [sortKey, setSortKey] = useState<string>('')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [tradeDate, setTradeDate] = useState<string>('')
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     fetch(`${API_URL}/v1/stocks/sectors`)
@@ -85,6 +86,7 @@ function App() {
       const list = data.stocks || []
       setStocks(list)
       setTotal(keyword ? list.length : (data.total || 0))
+      if (list.length > 0 && list[0].trade_date) setTradeDate(list[0].trade_date)
     } catch (e) {
       setError(e instanceof Error ? e.message : '載入失敗')
     }
@@ -98,8 +100,11 @@ function App() {
     setSearchTerm(val)
     setPage(1)
     setSortKey('')
-    if (val.length === 0) fetchStocks(1, '', marketFilter, sectorFilter)
-    else fetchStocks(1, val)
+    if (debounceTimer.current) clearTimeout(debounceTimer.current)
+    debounceTimer.current = setTimeout(() => {
+      if (val.length === 0) fetchStocks(1, '', marketFilter, sectorFilter)
+      else fetchStocks(1, val)
+    }, 300)
   }
 
   const handleMarketFilter = (market: string) => {
@@ -223,9 +228,22 @@ function App() {
             {sectors.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           <span style={{ color: '#aaa', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>共 {total} 筆</span>
+          {tradeDate && (
+            <span style={{ color: '#666', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
+              資料日期：{tradeDate}
+            </span>
+          )}
         </div>
 
-        {error && <div style={{ color: '#f44336', padding: '0.5rem', marginBottom: '1rem' }}>⚠️ {error}</div>}
+        {error && (
+          <div style={{ color: '#f44336', padding: '0.75rem 1rem', marginBottom: '1rem', background: 'rgba(244,67,54,0.08)', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            ⚠️ {error}
+            <button onClick={() => fetchStocks(page, searchTerm || '', marketFilter, sectorFilter)}
+              style={{ marginLeft: 'auto', padding: '4px 10px', background: 'rgba(244,67,54,0.2)', color: '#f44336', border: '1px solid rgba(244,67,54,0.4)', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem' }}>
+              重試
+            </button>
+          </div>
+        )}
 
         {loading ? (
           <div style={{ textAlign: 'center', padding: '2rem', color: '#aaa' }}>⏳ 載入中...</div>
@@ -237,6 +255,7 @@ function App() {
                   <tr style={{ background: 'rgba(255,255,255,0.08)' }}>
                     {COLUMNS.map(({ label, key }) => (
                       <th key={key} onClick={() => handleSort(key)}
+                        title={sortKey === key ? '排序僅限本頁資料' : '點擊排序（僅限本頁）'}
                         style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 500, cursor: 'pointer', userSelect: 'none', color: sortKey === key ? '#f90' : '#ccc' }}>
                         {label} {sortKey === key ? (sortDir === 'asc' ? '↑' : '↓') : ''}
                       </th>
@@ -244,6 +263,14 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
+                  {sortedStocks.length === 0 && (
+                    <tr>
+                      <td colSpan={COLUMNS.length} style={{ padding: '3rem', textAlign: 'center', color: '#666' }}>
+                        <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🔍</div>
+                        <div>{searchTerm ? `找不到符合「${searchTerm}」的股票` : '目前沒有資料'}</div>
+                      </td>
+                    </tr>
+                  )}
                   {sortedStocks.map((s, i) => (
                     <tr key={s.symbol} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                       <td style={{ padding: '8px 12px', color: '#f90', fontWeight: 600 }}>{s.symbol}</td>
@@ -272,6 +299,12 @@ function App() {
               </table>
             </div>
 
+            {sortKey && sortedStocks.length > 0 && (
+              <div style={{ textAlign: 'center', marginTop: '0.5rem', color: '#666', fontSize: '0.8rem' }}>
+                ℹ️ 排序僅作用於本頁 {sortedStocks.length} 筆，完整排序請至下一版本支援
+              </div>
+            )}
+
             {!searchTerm && totalPages > 1 && (
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem', marginTop: '1.5rem' }}>
                 <button onClick={() => handlePage(1)} disabled={page === 1} style={{ padding: '6px 12px', background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: '4px', cursor: page === 1 ? 'not-allowed' : 'pointer', opacity: page === 1 ? 0.4 : 1 }}>«</button>
@@ -298,7 +331,7 @@ function App() {
       </main>
 
       <footer className="app-footer">
-        <p>© 2024 台股觀測站 | 版本 1.0.0</p>
+        <p>© {new Date().getFullYear()} 台股觀測站 | 版本 1.0.0</p>
       </footer>
     </div>
   )

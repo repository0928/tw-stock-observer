@@ -7,7 +7,7 @@ import logging
 import aiohttp
 from typing import Optional, List, Dict, Any
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, desc
@@ -115,7 +115,7 @@ class StockService:
                         existing.name = name
                         existing.market_type = "上市"
                         existing.is_active = True
-                        existing.updated_at = datetime.utcnow()
+                        existing.updated_at = datetime.now(timezone.utc)
                         updated += 1
                     else:
                         stock = Stock(
@@ -186,7 +186,7 @@ class StockService:
                         existing.name = name
                         existing.market_type = "上櫃"
                         existing.is_active = True
-                        existing.updated_at = datetime.utcnow()
+                        existing.updated_at = datetime.now(timezone.utc)
                         updated += 1
                     else:
                         stock = Stock(
@@ -346,7 +346,7 @@ class StockService:
                 if value is not None:
                     setattr(stock, key, value)
             
-            stock.updated_at = datetime.utcnow()
+            stock.updated_at = datetime.now(timezone.utc)
             await self.db.commit()
             await self.db.refresh(stock)
             return stock

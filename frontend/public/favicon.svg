@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- 背景圓 -->
+  <circle cx="32" cy="32" r="32" fill="#1a1a2e"/>
+  <!-- 折線圖 -->
+  <polyline
+    points="8,46 18,34 26,40 36,22 46,28 56,14"
+    fill="none"
+    stroke="#ff6b35"
+    stroke-width="4"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <!-- 節點 -->
+  <circle cx="36" cy="22" r="3.5" fill="#f7931e"/>
+  <circle cx="56" cy="14" r="3.5" fill="#f7931e"/>
+</svg>

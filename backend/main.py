@@ -3,12 +3,13 @@
 """
 import logging
 import ssl
+import certifi
 import urllib.request
 import json
 import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,12 +29,15 @@ logger = logging.getLogger(__name__)
 
 # ==================== 同步函數 ====================
 
+def _ssl_ctx() -> ssl.SSLContext:
+    """建立使用 certifi 憑證庫的 SSL context"""
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 async def sync_quotes_job():
     """每日自動同步行情（上市 + 上櫃）"""
     logger.info("⏰ 開始自動同步行情...")
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = _ssl_ctx()
 
     # ── 上市行情 ──
     try:
@@ -79,7 +83,7 @@ async def sync_quotes_job():
                         stock.change_percent = change_pct
                         stock.volume = volume
                         stock.trade_date = trade_date
-                        stock.updated_at = datetime.utcnow()
+                        stock.updated_at = datetime.now(timezone.utc)
                         updated += 1
                 except Exception as e:
                     logger.error(f"更新上市 {symbol} 失敗: {e}")
@@ -146,7 +150,7 @@ async def sync_quotes_job():
                         stock.change_amount  = change
                         stock.change_percent = change_pct
                         stock.volume      = volume
-                        stock.updated_at  = datetime.utcnow()
+                        stock.updated_at  = datetime.now(timezone.utc)
                         updated2 += 1
                 except Exception as e:
                     logger.error(f"更新上櫃 {symbol} 失敗: {e}")
@@ -163,9 +167,7 @@ async def sync_sectors_job():
     """每週自動同步產業分類"""
     logger.info("⏰ 開始自動同步產業...")
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = _ssl_ctx()
 
         url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
         with urllib.request.urlopen(url, context=ctx, timeout=30) as resp:
@@ -190,7 +192,7 @@ async def sync_sectors_job():
                         stock = result.scalar_one_or_none()
                         if stock:
                             stock.sector = sector
-                            stock.updated_at = datetime.utcnow()
+                            stock.updated_at = datetime.now(timezone.utc)
                             updated += 1
             await db.commit()
             logger.info(f"✅ 產業同步完成: {updated} 筆")
@@ -203,9 +205,7 @@ async def sync_sectors_job():
 async def sync_pe_job():
     """每日自動同步本益比、淨值比（上市 + 上櫃）"""
     logger.info("⏰ 開始自動同步本益比...")
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = _ssl_ctx()
 
     # ── 上市本益比 ──
     try:
@@ -235,7 +235,7 @@ async def sync_pe_job():
                     if stock:
                         stock.pe_ratio = pe
                         stock.pb_ratio = pb
-                        stock.updated_at = datetime.utcnow()
+                        stock.updated_at = datetime.now(timezone.utc)
                         updated += 1
                 except Exception as e:
                     logger.error(f"更新上市本益比 {symbol} 失敗: {e}")
@@ -273,7 +273,7 @@ async def sync_pe_job():
                     if stock:
                         stock.pe_ratio = pe
                         stock.pb_ratio = pb
-                        stock.updated_at = datetime.utcnow()
+                        stock.updated_at = datetime.now(timezone.utc)
                         updated2 += 1
                 except Exception as e:
                     logger.error(f"更新上櫃本益比 {symbol} 失敗: {e}")
@@ -290,9 +290,7 @@ async def sync_eps_job():
     """每日自動同步 EPS、營收、淨利（上市 + 上櫃）"""
     logger.info("⏰ 開始自動同步 EPS / 營收 / 淨利...")
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = _ssl_ctx()
 
         urls = [
             "https://openapi.twse.com.tw/v1/opendata/t187ap14_L",
@@ -336,7 +334,7 @@ async def sync_eps_job():
                         stock.eps = eps
                         stock.revenue = revenue
                         stock.net_income = net_income
-                        stock.updated_at = datetime.utcnow()
+                        stock.updated_at = datetime.now(timezone.utc)
                         updated += 1
                 except Exception as e:
                     logger.error(f"更新 EPS {symbol} 失敗: {e}")

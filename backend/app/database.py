@@ -107,7 +107,7 @@ async def close_db():
 
 # ==================== ORM Base Models ====================
 
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, DateTime, func
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
@@ -128,14 +128,14 @@ class BaseModel(Base):
     )
     created_at = Column(
         DateTime(timezone=True),
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         nullable=False,
         index=True,
     )
     updated_at = Column(
         DateTime(timezone=True),
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
 
