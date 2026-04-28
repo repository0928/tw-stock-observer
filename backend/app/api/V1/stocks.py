@@ -72,6 +72,15 @@ async def list_stocks(
     sector: Optional[str] = None,
     name_contains: Optional[str] = None,
     min_change_percent: Optional[float] = None,
+    max_change_percent: Optional[float] = None,
+    min_pe_ratio: Optional[float] = None,
+    max_pe_ratio: Optional[float] = None,
+    min_pb_ratio: Optional[float] = None,
+    max_pb_ratio: Optional[float] = None,
+    min_eps: Optional[float] = None,
+    min_net_income: Optional[float] = None,
+    max_net_income: Optional[float] = None,
+    close_at_high: Optional[bool] = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """獲取股票列表"""
@@ -85,6 +94,25 @@ async def list_stocks(
             conditions.append(Stock.name.contains(name_contains))
         if min_change_percent is not None:
             conditions.append(Stock.change_percent >= min_change_percent)
+        if max_change_percent is not None:
+            conditions.append(Stock.change_percent <= max_change_percent)
+        if min_pe_ratio is not None:
+            conditions.append(Stock.pe_ratio >= min_pe_ratio)
+        if max_pe_ratio is not None:
+            conditions.append(Stock.pe_ratio <= max_pe_ratio)
+        if min_pb_ratio is not None:
+            conditions.append(Stock.pb_ratio >= min_pb_ratio)
+        if max_pb_ratio is not None:
+            conditions.append(Stock.pb_ratio <= max_pb_ratio)
+        if min_eps is not None:
+            conditions.append(Stock.eps >= min_eps)
+        if min_net_income is not None:
+            conditions.append(Stock.net_income >= min_net_income)
+        if max_net_income is not None:
+            conditions.append(Stock.net_income <= max_net_income)
+        if close_at_high is True:
+            conditions.append(Stock.close_price != None)
+            conditions.append(Stock.close_price == Stock.high_price)
 
         count_stmt = select(func.count()).select_from(Stock).where(*conditions)
         count_result = await db.execute(count_stmt)

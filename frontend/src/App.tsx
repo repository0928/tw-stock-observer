@@ -22,6 +22,20 @@ interface Stock {
   trade_date?: string
 }
 
+interface FilterParams {
+  nameContains?: string
+  minChangePct?: number
+  maxChangePct?: number
+  minPeRatio?: number
+  maxPeRatio?: number
+  minPbRatio?: number
+  maxPbRatio?: number
+  minEps?: number
+  minNetIncome?: number
+  maxNetIncome?: number
+  closeAtHigh?: boolean
+}
+
 const API_URL = (import.meta.env.VITE_API_URL as string) || 'http://localhost:8000/api'
 
 const PAGE_SIZE = 50
@@ -46,13 +60,75 @@ const COLUMNS = [
   { label: '淨利(千)', key: 'net_income' },
 ]
 
-// 快捷篩選定義
-type QuickFilter = 'etf' | 'limit_up' | 'revenue_growth'
-const QUICK_FILTERS: { key: QuickFilter; label: string; emoji: string; tooltip: string }[] = [
-  { key: 'etf', label: 'ETF', emoji: '📦', tooltip: '篩選 ETF 商品（名稱含 ETF）' },
-  { key: 'limit_up', label: '漲停板', emoji: '🚀', tooltip: '篩選漲幅 ≥ 9.5% 的漲停股' },
-  { key: 'revenue_growth', label: '營收成長 20%+', emoji: '📈', tooltip: '需要歷史營收資料（尚未支援）' },
+type QuickFilterKey =
+  | 'limit_up' | 'near_limit' | 'rising' | 'falling' | 'limit_down'
+  | 'low_pe' | 'low_pb' | 'high_eps'
+  | 'profitable' | 'losing'
+  | 'etf' | 'close_at_high'
+  | 'revenue_growth'
+
+interface QuickFilterDef {
+  key: QuickFilterKey
+  label: string
+  emoji: string
+  tooltip: string
+  params: FilterParams
+  disabled?: boolean
+}
+
+const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
+  {
+    label: '漲跌',
+    filters: [
+      { key: 'limit_up',    label: '漲停板',   emoji: '🚀', tooltip: '漲幅 ≥ 9.5%',              params: { minChangePct: 9.5 } },
+      { key: 'near_limit',  label: '接近漲停', emoji: '🔥', tooltip: '漲幅 8% ～ 9.49%',          params: { minChangePct: 8, maxChangePct: 9.49 } },
+      { key: 'rising',      label: '今日上漲', emoji: '📈', tooltip: '漲跌幅 > 0%',              params: { minChangePct: 0.01 } },
+      { key: 'falling',     label: '今日下跌', emoji: '📉', tooltip: '漲跌幅 < 0%',              params: { maxChangePct: -0.01 } },
+      { key: 'limit_down',  label: '跌停板',   emoji: '🔻', tooltip: '漲幅 ≤ −9.5%',             params: { maxChangePct: -9.5 } },
+    ],
+  },
+  {
+    label: '估值',
+    filters: [
+      { key: 'low_pe',   label: '低本益比', emoji: '💰', tooltip: '本益比 1 ～ 15',   params: { minPeRatio: 1, maxPeRatio: 15 } },
+      { key: 'low_pb',   label: '低淨值比', emoji: '🏦', tooltip: '淨值比 0.01 ～ 1', params: { minPbRatio: 0.01, maxPbRatio: 1 } },
+      { key: 'high_eps', label: '高 EPS',   emoji: '⭐', tooltip: 'EPS ≥ 5 元',       params: { minEps: 5 } },
+    ],
+  },
+  {
+    label: '獲利',
+    filters: [
+      { key: 'profitable', label: '獲利股',   emoji: '✅', tooltip: '淨利 > 0',            params: { minNetIncome: 1 } },
+      { key: 'losing',     label: '虧損股',   emoji: '❌', tooltip: '淨利 < 0',            params: { maxNetIncome: -1 } },
+      { key: 'revenue_growth', label: '營收成長 20%+', emoji: '📊', tooltip: '需要歷史營收資料（即將推出）', params: {}, disabled: true },
+    ],
+  },
+  {
+    label: '其他',
+    filters: [
+      { key: 'etf',          label: 'ETF',      emoji: '📦', tooltip: '名稱含 "ETF"',       params: { nameContains: 'ETF' } },
+      { key: 'close_at_high', label: '收在最高', emoji: '🎯', tooltip: '收盤價 = 當日最高價', params: { closeAtHigh: true } },
+    ],
+  },
 ]
+
+const ALL_FILTERS = FILTER_GROUPS.flatMap(g => g.filters)
+
+function buildUrl(base: string, fp: FilterParams): string {
+  let url = base
+  if (fp.nameContains)        url += `&name_contains=${encodeURIComponent(fp.nameContains)}`
+  if (fp.minChangePct != null) url += `&min_change_percent=${fp.minChangePct}`
+  if (fp.maxChangePct != null) url += `&max_change_percent=${fp.maxChangePct}`
+  if (fp.minPeRatio != null)   url += `&min_pe_ratio=${fp.minPeRatio}`
+  if (fp.maxPeRatio != null)   url += `&max_pe_ratio=${fp.maxPeRatio}`
+  if (fp.minPbRatio != null)   url += `&min_pb_ratio=${fp.minPbRatio}`
+  if (fp.maxPbRatio != null)   url += `&max_pb_ratio=${fp.maxPbRatio}`
+  if (fp.minEps != null)       url += `&min_eps=${fp.minEps}`
+  if (fp.minNetIncome != null) url += `&min_net_income=${fp.minNetIncome}`
+  if (fp.maxNetIncome != null) url += `&max_net_income=${fp.maxNetIncome}`
+  if (fp.closeAtHigh)          url += `&close_at_high=true`
+  return url
+}
 
 function App() {
   const [stocks, setStocks] = useState<Stock[]>([])
@@ -67,8 +143,13 @@ function App() {
   const [sortKey, setSortKey] = useState<string>('')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [tradeDate, setTradeDate] = useState<string>('')
-  const [quickFilter, setQuickFilter] = useState<QuickFilter | ''>('')
+  const [activeFilter, setActiveFilter] = useState<QuickFilterKey | ''>('')
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const currentFilterParams = (): FilterParams => {
+    if (!activeFilter) return {}
+    return ALL_FILTERS.find(f => f.key === activeFilter)?.params || {}
+  }
 
   useEffect(() => {
     fetch(`${API_URL}/v1/stocks/sectors`)
@@ -82,8 +163,7 @@ function App() {
     keyword?: string,
     market?: string,
     sector?: string,
-    nameContains?: string,
-    minChangePct?: number,
+    fp: FilterParams = {},
   ) => {
     setLoading(true)
     setError(null)
@@ -93,11 +173,10 @@ function App() {
         url = `${API_URL}/v1/stocks/search/${encodeURIComponent(keyword)}`
       } else {
         const skip = (p - 1) * PAGE_SIZE
-        url = `${API_URL}/v1/stocks?skip=${skip}&limit=${PAGE_SIZE}`
-        if (market) url += `&market_type=${encodeURIComponent(market)}`
-        if (sector) url += `&sector=${encodeURIComponent(sector)}`
-        if (nameContains) url += `&name_contains=${encodeURIComponent(nameContains)}`
-        if (minChangePct !== undefined) url += `&min_change_percent=${minChangePct}`
+        let base = `${API_URL}/v1/stocks?skip=${skip}&limit=${PAGE_SIZE}`
+        if (market) base += `&market_type=${encodeURIComponent(market)}`
+        if (sector) base += `&sector=${encodeURIComponent(sector)}`
+        url = buildUrl(base, fp)
       }
       const res = await fetch(url)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -119,7 +198,7 @@ function App() {
     setSearchTerm(val)
     setPage(1)
     setSortKey('')
-    setQuickFilter('')
+    setActiveFilter('')
     if (debounceTimer.current) clearTimeout(debounceTimer.current)
     debounceTimer.current = setTimeout(() => {
       if (val.length === 0) fetchStocks(1, '', marketFilter, sectorFilter)
@@ -132,9 +211,7 @@ function App() {
     setPage(1)
     setSearchTerm('')
     setSortKey('')
-    const nameContains = quickFilter === 'etf' ? 'ETF' : undefined
-    const minChangePct = quickFilter === 'limit_up' ? 9.5 : undefined
-    fetchStocks(1, '', market, sectorFilter, nameContains, minChangePct)
+    fetchStocks(1, '', market, sectorFilter, currentFilterParams())
   }
 
   const handleSectorFilter = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -143,29 +220,25 @@ function App() {
     setPage(1)
     setSearchTerm('')
     setSortKey('')
-    const nameContains = quickFilter === 'etf' ? 'ETF' : undefined
-    const minChangePct = quickFilter === 'limit_up' ? 9.5 : undefined
-    fetchStocks(1, '', marketFilter, sector, nameContains, minChangePct)
+    fetchStocks(1, '', marketFilter, sector, currentFilterParams())
   }
 
   const handlePage = (newPage: number) => {
     setPage(newPage)
-    const nameContains = quickFilter === 'etf' ? 'ETF' : undefined
-    const minChangePct = quickFilter === 'limit_up' ? 9.5 : undefined
-    fetchStocks(newPage, searchTerm || '', marketFilter, sectorFilter, nameContains, minChangePct)
+    fetchStocks(newPage, '', marketFilter, sectorFilter, currentFilterParams())
     window.scrollTo(0, 0)
   }
 
-  const handleQuickFilter = (filter: QuickFilter) => {
-    if (filter === 'revenue_growth') return // 尚未支援
-    const next = quickFilter === filter ? '' : filter
-    setQuickFilter(next)
+  const handleQuickFilter = (key: QuickFilterKey) => {
+    const def = ALL_FILTERS.find(f => f.key === key)
+    if (!def || def.disabled) return
+    const next = activeFilter === key ? '' : key
+    setActiveFilter(next)
     setPage(1)
     setSearchTerm('')
     setSortKey('')
-    const nameContains = next === 'etf' ? 'ETF' : undefined
-    const minChangePct = next === 'limit_up' ? 9.5 : undefined
-    fetchStocks(1, '', marketFilter, sectorFilter, nameContains, minChangePct)
+    const fp = next ? (def.params) : {}
+    fetchStocks(1, '', marketFilter, sectorFilter, fp)
   }
 
   const handleSort = (key: string) => {
@@ -197,7 +270,6 @@ function App() {
     return Math.round(num / 1000).toLocaleString()
   }
 
-  // 格式化日期：2024-01-15 → 01/15
   const fmtDate = (d?: string) => {
     if (!d) return '--'
     const parts = d.split('-')
@@ -247,20 +319,38 @@ function App() {
     fontWeight: active ? 700 : 400, fontSize: '0.85rem',
   })
 
-  const quickBtnStyle = (key: QuickFilter, active: boolean) => {
-    const disabled = key === 'revenue_growth'
+  const qBtnStyle = (def: QuickFilterDef) => {
+    const active = activeFilter === def.key
+    const disabled = !!def.disabled
     return {
-      padding: '6px 14px',
-      background: active ? '#7c3aed' : disabled ? 'rgba(255,255,255,0.04)' : 'rgba(124,58,237,0.15)',
-      color: active ? '#fff' : disabled ? '#555' : '#a78bfa',
-      border: active ? 'none' : `1px solid ${disabled ? 'rgba(255,255,255,0.07)' : 'rgba(124,58,237,0.35)'}`,
-      borderRadius: '6px',
+      padding: '4px 11px',
+      background: active
+        ? 'rgba(124,58,237,0.85)'
+        : disabled
+          ? 'rgba(255,255,255,0.03)'
+          : 'rgba(255,255,255,0.06)',
+      color: active ? '#fff' : disabled ? '#444' : '#bbb',
+      border: `1px solid ${active ? 'rgba(124,58,237,0.6)' : disabled ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.1)'}`,
+      borderRadius: '5px',
       cursor: disabled ? 'not-allowed' : 'pointer',
-      fontWeight: active ? 700 : 400,
-      fontSize: '0.85rem',
+      fontSize: '0.82rem',
       opacity: disabled ? 0.5 : 1,
-    } as React.CSSProperties
+      whiteSpace: 'nowrap' as const,
+      transition: 'background 0.15s',
+    }
   }
+
+  const pageBtnStyle = (disabled: boolean) => ({
+    padding: '6px 12px',
+    background: 'rgba(255,255,255,0.1)',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.4 : 1,
+  })
+
+  const activeFilterDef = ALL_FILTERS.find(f => f.key === activeFilter)
 
   return (
     <div className="app">
@@ -271,7 +361,7 @@ function App() {
 
       <main className="app-main">
         {/* 搜尋列與市場篩選 */}
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '0.6rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
           <input
             type="text" className="search-input"
             placeholder="搜尋股票代碼或名稱..."
@@ -290,42 +380,52 @@ function App() {
           </select>
           <span style={{ color: '#aaa', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>共 {total} 筆</span>
           {tradeDate && (
-            <span style={{ color: '#666', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
-              資料日期：{tradeDate}
-            </span>
+            <span style={{ color: '#666', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>資料日期：{tradeDate}</span>
           )}
         </div>
 
-        {/* 快捷篩選按鈕列 */}
-        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap' }}>
-          <span style={{ color: '#666', fontSize: '0.8rem', whiteSpace: 'nowrap' }}>快捷篩選：</span>
-          {QUICK_FILTERS.map(({ key, label, emoji, tooltip }) => (
-            <button
-              key={key}
-              title={tooltip}
-              style={quickBtnStyle(key, quickFilter === key)}
-              onClick={() => handleQuickFilter(key)}
-            >
-              {emoji} {label}
-              {key === 'revenue_growth' && (
-                <span style={{ marginLeft: '4px', fontSize: '0.7rem', opacity: 0.7 }}>（即將推出）</span>
-              )}
-            </button>
+        {/* 快捷篩選 — 分組 */}
+        <div style={{ marginBottom: '1rem', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          {FILTER_GROUPS.map(group => (
+            <div key={group.label} style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+              <span style={{ color: '#555', fontSize: '0.75rem', minWidth: '30px', textAlign: 'right', flexShrink: 0 }}>
+                {group.label}
+              </span>
+              <div style={{ width: '1px', height: '14px', background: 'rgba(255,255,255,0.1)', flexShrink: 0 }} />
+              {group.filters.map(def => (
+                <button
+                  key={def.key}
+                  title={def.tooltip}
+                  style={qBtnStyle(def)}
+                  onClick={() => handleQuickFilter(def.key)}
+                >
+                  {def.emoji} {def.label}
+                  {def.disabled && <span style={{ marginLeft: '3px', fontSize: '0.7rem', opacity: 0.6 }}>（即將推出）</span>}
+                </button>
+              ))}
+            </div>
           ))}
-          {quickFilter && (
-            <button
-              onClick={() => handleQuickFilter(quickFilter as QuickFilter)}
-              style={{ padding: '4px 10px', background: 'transparent', color: '#888', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', cursor: 'pointer', fontSize: '0.78rem' }}
-            >
-              ✕ 清除篩選
-            </button>
+
+          {/* 已套用篩選提示 */}
+          {activeFilterDef && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
+              <span style={{ fontSize: '0.8rem', color: '#a78bfa' }}>
+                已篩選：{activeFilterDef.emoji} {activeFilterDef.label}（{activeFilterDef.tooltip}）
+              </span>
+              <button
+                onClick={() => handleQuickFilter(activeFilter as QuickFilterKey)}
+                style={{ padding: '2px 8px', background: 'transparent', color: '#666', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem' }}
+              >
+                ✕ 清除
+              </button>
+            </div>
           )}
         </div>
 
         {error && (
           <div style={{ color: '#f44336', padding: '0.75rem 1rem', marginBottom: '1rem', background: 'rgba(244,67,54,0.08)', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             ⚠️ {error}
-            <button onClick={() => fetchStocks(page, searchTerm || '', marketFilter, sectorFilter)}
+            <button onClick={() => fetchStocks(page, '', marketFilter, sectorFilter, currentFilterParams())}
               style={{ marginLeft: 'auto', padding: '4px 10px', background: 'rgba(244,67,54,0.2)', color: '#f44336', border: '1px solid rgba(244,67,54,0.4)', borderRadius: '4px', cursor: 'pointer', fontSize: '0.8rem' }}>
               重試
             </button>
@@ -354,7 +454,13 @@ function App() {
                     <tr>
                       <td colSpan={COLUMNS.length} style={{ padding: '3rem', textAlign: 'center', color: '#666' }}>
                         <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🔍</div>
-                        <div>{searchTerm ? `找不到符合「${searchTerm}」的股票` : quickFilter ? '目前沒有符合條件的股票' : '目前沒有資料'}</div>
+                        <div>
+                          {searchTerm
+                            ? `找不到符合「${searchTerm}」的股票`
+                            : activeFilterDef
+                              ? `目前沒有符合「${activeFilterDef.label}」條件的股票`
+                              : '目前沒有資料'}
+                        </div>
                       </td>
                     </tr>
                   )}
@@ -368,7 +474,7 @@ function App() {
                         </span>
                       </td>
                       <td style={{ padding: '8px 12px', color: '#aaa', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>{s.sector || '--'}</td>
-                      <td style={{ padding: '8px 12px', textAlign: 'right', color: '#666', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>{fmtDate(s.trade_date)}</td>
+                      <td style={{ padding: '8px 12px', textAlign: 'right', color: '#555', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>{fmtDate(s.trade_date)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: changeColor(s.change_amount), fontWeight: 600 }}>{fmt(s.close_price)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: changeColor(s.change_amount) }}>{fmtChange(s.change_amount)}</td>
                       <td style={{ padding: '8px 12px', textAlign: 'right', color: changeColor(s.change_percent) }}>{s.change_percent != null ? fmtChange(s.change_percent) + '%' : '--'}</td>
@@ -389,14 +495,14 @@ function App() {
 
             {sortKey && sortedStocks.length > 0 && (
               <div style={{ textAlign: 'center', marginTop: '0.5rem', color: '#666', fontSize: '0.8rem' }}>
-                ℹ️ 排序僅作用於本頁 {sortedStocks.length} 筆，完整排序請至下一版本支援
+                ℹ️ 排序僅作用於本頁 {sortedStocks.length} 筆
               </div>
             )}
 
             {!searchTerm && totalPages > 1 && (
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem', marginTop: '1.5rem' }}>
-                <button onClick={() => handlePage(1)} disabled={page === 1} style={{ padding: '6px 12px', background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: '4px', cursor: page === 1 ? 'not-allowed' : 'pointer', opacity: page === 1 ? 0.4 : 1 }}>«</button>
-                <button onClick={() => handlePage(page - 1)} disabled={page === 1} style={{ padding: '6px 12px', background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: '4px', cursor: page === 1 ? 'not-allowed' : 'pointer', opacity: page === 1 ? 0.4 : 1 }}>‹</button>
+                <button onClick={() => handlePage(1)} disabled={page === 1} style={pageBtnStyle(page === 1)}>«</button>
+                <button onClick={() => handlePage(page - 1)} disabled={page === 1} style={pageBtnStyle(page === 1)}>‹</button>
                 {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
                   let start = Math.max(1, page - 2)
                   if (start + 4 > totalPages) start = Math.max(1, totalPages - 4)
@@ -409,8 +515,8 @@ function App() {
                     </button>
                   )
                 })}
-                <button onClick={() => handlePage(page + 1)} disabled={page === totalPages} style={{ padding: '6px 12px', background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: '4px', cursor: page === totalPages ? 'not-allowed' : 'pointer', opacity: page === totalPages ? 0.4 : 1 }}>›</button>
-                <button onClick={() => handlePage(totalPages)} disabled={page === totalPages} style={{ padding: '6px 12px', background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: '4px', cursor: page === totalPages ? 'not-allowed' : 'pointer', opacity: page === totalPages ? 0.4 : 1 }}>»</button>
+                <button onClick={() => handlePage(page + 1)} disabled={page === totalPages} style={pageBtnStyle(page === totalPages)}>›</button>
+                <button onClick={() => handlePage(totalPages)} disabled={page === totalPages} style={pageBtnStyle(page === totalPages)}>»</button>
                 <span style={{ color: '#aaa', fontSize: '0.85rem' }}>第 {page} / {totalPages} 頁</span>
               </div>
             )}
