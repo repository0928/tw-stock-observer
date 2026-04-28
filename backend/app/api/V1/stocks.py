@@ -70,6 +70,8 @@ async def list_stocks(
     limit: int = Query(100, ge=1, le=500),
     market_type: Optional[str] = None,
     sector: Optional[str] = None,
+    name_contains: Optional[str] = None,
+    min_change_percent: Optional[float] = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """獲取股票列表"""
@@ -79,6 +81,10 @@ async def list_stocks(
             conditions.append(Stock.market_type == market_type)
         if sector:
             conditions.append(Stock.sector == sector)
+        if name_contains:
+            conditions.append(Stock.name.contains(name_contains))
+        if min_change_percent is not None:
+            conditions.append(Stock.change_percent >= min_change_percent)
 
         count_stmt = select(func.count()).select_from(Stock).where(*conditions)
         count_result = await db.execute(count_stmt)
