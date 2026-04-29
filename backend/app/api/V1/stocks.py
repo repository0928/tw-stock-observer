@@ -5,13 +5,31 @@ Stock API Endpoints
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, distinct
 from app.database import get_db
 from app.schemas import StockResponse, StockQuoteResponse, KlineDailyResponse
 from app.models import Stock
 from app.services.stock_service import StockService
+
+# ==================== 通用篩選白名單 ====================
+# 允許透過 {field}_min / {field}_max 篩選的數值欄位
+# 新增欄位時，只需將欄位名稱加入此集合即可，無需修改任何其他邏輯
+NUMERIC_FILTER_FIELDS = {
+    "change_percent", "close_price", "open_price", "high_price", "low_price",
+    "volume", "eps", "pe_ratio", "pb_ratio", "revenue", "net_income",
+    # 財務分析欄位（未來擴充）
+    "gross_margin", "operating_margin", "net_margin",
+    "revenue_growth", "revenue_growth_yoy",
+    "inventory_turnover", "receivable_turnover", "asset_turnover",
+    "roe", "roa", "debt_ratio",
+    "dividend_yield", "dividend_per_share",
+    "market_cap", "book_value_per_share",
+}
+
+# 允許透過 {field}_contains 篩選的字串欄位
+STRING_FILTER_FIELDS = {"name", "symbol", "sector", "industry"}
 
 logger = logging.getLogger(__name__)
 
@@ -66,51 +84,54 @@ async def list_sectors(db: AsyncSession = Depends(get_db)) -> dict:
 
 @router.get("")
 async def list_stocks(
+    request: Request,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     market_type: Optional[str] = None,
     sector: Optional[str] = None,
-    name_contains: Optional[str] = None,
-    min_change_percent: Optional[float] = None,
-    max_change_percent: Optional[float] = None,
-    min_pe_ratio: Optional[float] = None,
-    max_pe_ratio: Optional[float] = None,
-    min_pb_ratio: Optional[float] = None,
-    max_pb_ratio: Optional[float] = None,
-    min_eps: Optional[float] = None,
-    min_net_income: Optional[float] = None,
-    max_net_income: Optional[float] = None,
-    close_at_high: Optional[bool] = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """獲取股票列表"""
+    """獲取股票列表
+
+    支援通用數值篩選：{field}_min=值、{field}_max=值
+    支援字串篩選：{field}_contains=值
+    特殊篩選：close_at_high=true（收盤 = 最高）
+
+    可用數值欄位：見 NUMERIC_FILTER_FIELDS 白名單
+    """
     try:
         conditions = [Stock.is_active == True]
         if market_type:
             conditions.append(Stock.market_type == market_type)
         if sector:
             conditions.append(Stock.sector == sector)
-        if name_contains:
-            conditions.append(Stock.name.contains(name_contains))
-        if min_change_percent is not None:
-            conditions.append(Stock.change_percent >= min_change_percent)
-        if max_change_percent is not None:
-            conditions.append(Stock.change_percent <= max_change_percent)
-        if min_pe_ratio is not None:
-            conditions.append(Stock.pe_ratio >= min_pe_ratio)
-        if max_pe_ratio is not None:
-            conditions.append(Stock.pe_ratio <= max_pe_ratio)
-        if min_pb_ratio is not None:
-            conditions.append(Stock.pb_ratio >= min_pb_ratio)
-        if max_pb_ratio is not None:
-            conditions.append(Stock.pb_ratio <= max_pb_ratio)
-        if min_eps is not None:
-            conditions.append(Stock.eps >= min_eps)
-        if min_net_income is not None:
-            conditions.append(Stock.net_income >= min_net_income)
-        if max_net_income is not None:
-            conditions.append(Stock.net_income <= max_net_income)
-        if close_at_high is True:
+
+        # ── 通用篩選解析 ──────────────────────────────────────────
+        params = dict(request.query_params)
+        for param, raw_value in params.items():
+            # 數值欄位：{field}_min / {field}_max
+            if param.endswith("_min"):
+                field = param[:-4]
+                if field in NUMERIC_FILTER_FIELDS and hasattr(Stock, field):
+                    try:
+                        conditions.append(getattr(Stock, field) >= float(raw_value))
+                    except ValueError:
+                        pass
+            elif param.endswith("_max"):
+                field = param[:-4]
+                if field in NUMERIC_FILTER_FIELDS and hasattr(Stock, field):
+                    try:
+                        conditions.append(getattr(Stock, field) <= float(raw_value))
+                    except ValueError:
+                        pass
+            # 字串欄位：{field}_contains
+            elif param.endswith("_contains"):
+                field = param[:-9]
+                if field in STRING_FILTER_FIELDS and hasattr(Stock, field):
+                    conditions.append(getattr(Stock, field).contains(raw_value))
+
+        # 特殊篩選：收盤 = 最高（強勢收盤）
+        if params.get("close_at_high") == "true":
             conditions.append(Stock.close_price != None)
             conditions.append(Stock.close_price == Stock.high_price)
 
