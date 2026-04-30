@@ -95,14 +95,31 @@ print(f"✅ 上市三大法人更新: {updated} 筆")
 
 
 # ==================== 上櫃三大法人 ====================
+# TPEx 三大法人 JSON API 目前尚未找到可用端點，跳過
 print("下載上櫃三大法人資料...")
-r2 = requests.get(
+OTC_3INSTI_URLS = [
     "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_3insti_info",
-    timeout=30, verify=False
-)
+    "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_3insti",
+]
+
+otc_inst_items = []
+for url in OTC_3INSTI_URLS:
+    try:
+        r2 = requests.get(url, timeout=15, verify=False)
+        if r2.status_code == 200 and r2.text.strip().startswith('['):
+            otc_inst_items = r2.json()
+            print(f"  使用 URL: {url}，共 {len(otc_inst_items)} 筆")
+            break
+        else:
+            print(f"  URL 回傳非 JSON ({r2.status_code}): {url}")
+    except Exception as e:
+        print(f"  URL 失敗: {e}")
+
+if not otc_inst_items:
+    print("  ⚠️ 上櫃三大法人 API 尚未找到可用 URL，跳過")
 
 updated2 = 0
-for item in r2.json():
+for item in otc_inst_items:
     symbol = item.get("SecuritiesCompanyCode", "").strip()
     if not symbol.isdigit():
         continue
