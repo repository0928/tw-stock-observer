@@ -56,7 +56,25 @@ class StockResponse(StockBase):
     change_percent: Optional[Decimal] = None
     volume: Optional[int] = None
     trade_date: Optional[str] = None
-    
+    turnover_rate: Optional[Decimal] = None
+
+    # 月營收
+    revenue_yoy: Optional[Decimal] = None
+    revenue_mom: Optional[Decimal] = None
+
+    # 三大法人
+    foreign_net_buy: Optional[int] = None
+    investment_trust_net_buy: Optional[int] = None
+    dealer_net_buy: Optional[int] = None
+
+    # 財報
+    gross_margin: Optional[Decimal] = None
+    operating_margin: Optional[Decimal] = None
+    net_margin: Optional[Decimal] = None
+    roe: Optional[Decimal] = None
+    roa: Optional[Decimal] = None
+    debt_ratio: Optional[Decimal] = None
+
     class Config:
         from_attributes = True
 

@@ -17,15 +17,24 @@ from app.services.stock_service import StockService
 # 允許透過 {field}_min / {field}_max 篩選的數值欄位
 # 新增欄位時，只需將欄位名稱加入此集合即可，無需修改任何其他邏輯
 NUMERIC_FILTER_FIELDS = {
+    # 行情
     "change_percent", "close_price", "open_price", "high_price", "low_price",
-    "volume", "eps", "pe_ratio", "pb_ratio", "revenue", "net_income",
-    # 財務分析欄位（未來擴充）
+    "volume", "turnover_rate",
+    # 估值
+    "eps", "pe_ratio", "pb_ratio", "dividend_yield", "dividend_per_share",
+    # 損益
+    "revenue", "net_income",
+    # 月營收
+    "revenue_yoy", "revenue_mom",
+    # 三大法人
+    "foreign_net_buy", "investment_trust_net_buy", "dealer_net_buy",
+    # 財報
     "gross_margin", "operating_margin", "net_margin",
-    "revenue_growth", "revenue_growth_yoy",
-    "inventory_turnover", "receivable_turnover", "asset_turnover",
     "roe", "roa", "debt_ratio",
-    "dividend_yield", "dividend_per_share",
+    # 預留擴充
     "market_cap", "book_value_per_share",
+    "inventory_turnover", "receivable_turnover", "asset_turnover",
+    "current_ratio", "quick_ratio",
 }
 
 # 允許透過 {field}_contains 篩選的字串欄位

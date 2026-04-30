@@ -102,6 +102,7 @@ class Stock(BaseModel):
     suspension_reason = Column(String(255))
     
     financial_data_updated_at = Column(DateTime(timezone=True))
+
     # 當日行情
     close_price = Column(DECIMAL(10, 2))
     open_price = Column(DECIMAL(10, 2))
@@ -110,9 +111,25 @@ class Stock(BaseModel):
     change_amount = Column(DECIMAL(10, 2))
     change_percent = Column(DECIMAL(8, 2))
     volume = Column(BIGINT)
-    trade_date = Column(String(10))    
+    trade_date = Column(String(10))
+    turnover_rate = Column(DECIMAL(8, 4))           # 週轉率(%)
 
+    # 月營收
+    revenue_yoy = Column(DECIMAL(8, 2))             # 月營收年增率(%)
+    revenue_mom = Column(DECIMAL(8, 2))             # 月營收月增率(%)
 
+    # 三大法人（單位：張）
+    foreign_net_buy = Column(BIGINT)                # 外資買賣超
+    investment_trust_net_buy = Column(BIGINT)       # 投信買賣超
+    dealer_net_buy = Column(BIGINT)                 # 自營商買賣超
+
+    # 財報（季更新）
+    gross_margin = Column(DECIMAL(8, 2))            # 毛利率(%)
+    operating_margin = Column(DECIMAL(8, 2))        # 營業利益率(%)
+    net_margin = Column(DECIMAL(8, 2))              # 淨利率(%)
+    roe = Column(DECIMAL(8, 2))                     # 股東權益報酬率(%)
+    roa = Column(DECIMAL(8, 2))                     # 資產報酬率(%)
+    debt_ratio = Column(DECIMAL(8, 2))              # 負債比率(%)
 
     # 關係
     klines = relationship("KlineDaily", back_populates="stock", cascade="all, delete-orphan")
