@@ -40,10 +40,12 @@ print(f"  ✅ 已清除（影響 {cur.rowcount} 筆）")
 # ── Step 2：上市注意股票 ────────────────────────────────────
 print("下載上市注意股票...")
 ATTN_URLS = [
+    # TWSE rwd API（與 T86/MI_MARGN 同域，較穩定）
+    "https://www.twse.com.tw/rwd/zh/announcement/ATTENTION?response=json",
+    "https://www.twse.com.tw/rwd/zh/notice/attention?response=json",
+    # openapi 備選（目前回傳 HTML，留存以備日後修復）
     "https://openapi.twse.com.tw/v1/announcement/attention",
     "https://openapi.twse.com.tw/v1/opendata/t49sb12_1",
-    "https://openapi.twse.com.tw/v1/opendata/t94sb01",      # 公告注意股票
-    "https://openapi.twse.com.tw/v1/exchangeReport/ATTENTION_ALL",
 ]
 attn_items = []
 for url in ATTN_URLS:
@@ -79,10 +81,12 @@ print(f"✅ 上市注意股票標記: {attn_count} 檔")
 # ── Step 3：上市處置股票 ────────────────────────────────────
 print("下載上市處置股票...")
 DISP_URLS = [
+    # TWSE rwd API
+    "https://www.twse.com.tw/rwd/zh/announcement/DISPOSE?response=json",
+    "https://www.twse.com.tw/rwd/zh/notice/dispose?response=json",
+    # openapi 備選
     "https://openapi.twse.com.tw/v1/announcement/disposition",
     "https://openapi.twse.com.tw/v1/opendata/t49sb12_2",
-    "https://openapi.twse.com.tw/v1/opendata/t94sb02",      # 公告處置股票
-    "https://openapi.twse.com.tw/v1/exchangeReport/DISPOSITION_ALL",
 ]
 disp_items = []
 for url in DISP_URLS:

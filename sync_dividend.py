@@ -60,9 +60,9 @@ def safe_float(val):
 # ==================== 上市股利 (t187ap06_L) ====================
 print("下載上市股利分派資料...")
 TSE_DIV_URLS = [
-    "https://openapi.twse.com.tw/v1/opendata/t187ap06_L",  # 上市股利分派（季更新，部分時段可能空白）
-    "https://openapi.twse.com.tw/v1/opendata/t187ap06_T",  # 備選
-    "https://openapi.twse.com.tw/v1/exchangeReport/DIVIDEND_ALL",
+    "https://openapi.twse.com.tw/v1/opendata/t187ap06_L",  # 上市股利分派（季更新）
+    "https://www.twse.com.tw/rwd/zh/afterTrading/BFIAMU?response=json",  # 備選：股利分派
+    "https://openapi.twse.com.tw/v1/opendata/t187ap06_T",
 ]
 items_tse = []
 for _url in TSE_DIV_URLS:
