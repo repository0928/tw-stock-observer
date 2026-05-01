@@ -95,9 +95,10 @@ print(f"✅ 上市三大法人更新: {updated} 筆")
 
 
 # ==================== 上櫃三大法人 ====================
-# TPEx 三大法人 JSON API 目前尚未找到可用端點，跳過
 print("下載上櫃三大法人資料...")
+# Swagger 確認可用端點（優先嘗試）：tpex_3insti_daily_trading
 OTC_3INSTI_URLS = [
+    "https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading",
     "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_3insti_info",
     "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_3insti",
 ]
@@ -109,6 +110,8 @@ for url in OTC_3INSTI_URLS:
         if r2.status_code == 200 and r2.text.strip().startswith('['):
             otc_inst_items = r2.json()
             print(f"  使用 URL: {url}，共 {len(otc_inst_items)} 筆")
+            if otc_inst_items:
+                print(f"  欄位: {list(otc_inst_items[0].keys())}")
             break
         else:
             print(f"  URL 回傳非 JSON ({r2.status_code}): {url}")
@@ -116,7 +119,7 @@ for url in OTC_3INSTI_URLS:
         print(f"  URL 失敗: {e}")
 
 if not otc_inst_items:
-    print("  ⚠️ 上櫃三大法人 API 尚未找到可用 URL，跳過")
+    print("  ⚠️ 上櫃三大法人 API 無可用 URL，跳過")
 
 updated2 = 0
 for item in otc_inst_items:
@@ -124,30 +127,28 @@ for item in otc_inst_items:
     if not symbol.isdigit():
         continue
     try:
-        # TPEx 欄位（單位：張）
-        foreign = parse_int(item.get("ForeignInvestorsNetBuyOrSellShares",
-                            item.get("Foreign_Investor_Net_Buy_Sell", "")))
-        trust   = parse_int(item.get("InvestmentTrustNetBuyOrSellShares",
-                            item.get("Investment_Trust_Net_Buy_Sell", "")))
-        dealer  = parse_int(item.get("DealerNetBuyOrSellShares",
-                            item.get("Dealer_Net_Buy_Sell", "")))
+        # TPEx tpex_3insti_daily_trading 實際欄位（含空格，用 Difference 關鍵字找）
+        # 外資差額：key 含 "Foreign" 且含 "Difference"（排除 ForeignDealers）
+        # 投信差額：key 含 "InvestmentTrust" 或 "SecuritiesInvestment" 且含 "Difference"
+        # 自營商差額：key 含 "Dealer" 且含 "Difference"（排除 ForeignDealer）
+        foreign = None
+        trust   = None
+        dealer  = None
 
-        # 若欄位名稱不同，嘗試 ForeignNetBuy 等變體
-        if foreign is None:
-            for key in item:
-                if "Foreign" in key and "Net" in key:
-                    foreign = parse_int(item[key])
-                    break
-        if trust is None:
-            for key in item:
-                if ("Trust" in key or "InvestmentTrust" in key) and "Net" in key:
-                    trust = parse_int(item[key])
-                    break
-        if dealer is None:
-            for key in item:
-                if "Dealer" in key and "Net" in key:
-                    dealer = parse_int(item[key])
-                    break
+        for key in item:
+            kn = key.replace(" ", "")   # 去除空格後比較
+            val = parse_int(item[key])
+            if val is None:
+                continue
+            # 外資（優先用含 MainlandArea 的大外資差額欄，排除 ForeignDealers 子項）
+            if foreign is None and "ForeignInvestors" in kn and "MainlandArea" in kn and "Difference" in kn:
+                foreign = round(val / 1000) if abs(val) > 100_000 else val  # 股→張 if large
+            # 投信
+            if trust is None and ("SecuritiesInvestmentTrustCompanies" in kn or "InvestmentTrust" in kn) and "Difference" in kn:
+                trust = round(val / 1000) if abs(val) > 100_000 else val
+            # 自營商（排除 ForeignDealers）
+            if dealer is None and "Dealers" in kn and "Difference" in kn and "Foreign" not in kn:
+                dealer = round(val / 1000) if abs(val) > 100_000 else val
 
         cur.execute(
             """UPDATE stocks SET

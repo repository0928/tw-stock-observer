@@ -110,4 +110,22 @@ for item in r2.json():
             volume = None
 
         # 週轉率 = 成交股數 / 流通股數 * 100
-        share
+        shares = shares_map.get(symbol)
+        turnover_rate = round(volume / shares * 100, 4) if volume and shares and shares > 0 else None
+
+        cur.execute("""
+            UPDATE stocks SET
+                open_price = %s, high_price = %s, low_price = %s,
+                close_price = %s, change_amount = %s, change_percent = %s,
+                volume = %s, turnover_rate = %s, updated_at = NOW()
+            WHERE symbol = %s
+        """, (open_p, high, low, close, change, change_pct, volume, turnover_rate, symbol))
+        updated2 += 1
+    except Exception as e:
+        print(f"處理上櫃 {symbol} 失敗: {e}")
+
+conn.commit()
+print(f"✅ 上櫃行情更新完成！更新 {updated2} 筆")
+
+cur.close()
+conn.close()

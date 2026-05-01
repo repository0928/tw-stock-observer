@@ -3,7 +3,7 @@ Pydantic 資料驗證 Schema
 Data Validation and Serialization Models
 """
 
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List
 from decimal import Decimal
 from uuid import UUID
@@ -74,6 +74,35 @@ class StockResponse(StockBase):
     roe: Optional[Decimal] = None
     roa: Optional[Decimal] = None
     debt_ratio: Optional[Decimal] = None
+
+    # 融資/融券
+    margin_long: Optional[int] = None
+    margin_short: Optional[int] = None
+
+    # 標記
+    is_attention: Optional[bool] = None
+    is_disposed: Optional[bool] = None
+    is_etf: Optional[bool] = None
+
+    # 股利
+    ex_dividend_date: Optional[date] = None
+    cash_dividend: Optional[Decimal] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ==================== 重大訊息 Schema ====================
+
+class AnnouncementOut(BaseModel):
+    """重大訊息回應 Schema"""
+    id: int
+    symbol: str
+    announce_date: date
+    subject: Optional[str] = None
+    content: Optional[str] = None
+    source: Optional[str] = None
+    created_at: datetime
 
     class Config:
         from_attributes = True

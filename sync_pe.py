@@ -62,4 +62,10 @@ for item in r2.json():
         )
         updated2 += 1
     except Exception as e:
-        print(f"處理上櫃 {symb
+        print(f"處理上櫃 {symbol} 失敗: {e}")
+
+conn.commit()
+cur.close()
+conn.close()
+print(f"✅ 上櫃本益比更新: {updated2} 筆")
+print("✅ 完成！")

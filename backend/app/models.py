@@ -3,7 +3,7 @@ SQLAlchemy ORM 資料模型
 Data Models for the Application
 """
 
-from datetime import datetime
+from datetime import datetime, date
 from sqlalchemy import (
     Column,
     String,
@@ -11,6 +11,7 @@ from sqlalchemy import (
     Float,
     Boolean,
     DateTime,
+    Date,
     Text,
     Index,
     ForeignKey,
@@ -131,8 +132,23 @@ class Stock(BaseModel):
     roa = Column(DECIMAL(8, 2))                     # 資產報酬率(%)
     debt_ratio = Column(DECIMAL(8, 2))              # 負債比率(%)
 
+    # 融資/融券
+    margin_long = Column(Integer)                   # 融資餘額（張）
+    margin_short = Column(Integer)                  # 融券餘額（張）
+
+    # 注意/處置/ETF 標記
+    is_attention = Column(Boolean, default=False)   # 注意股票
+    is_disposed = Column(Boolean, default=False)    # 處置股票
+    is_etf = Column(Boolean, default=False)         # ETF（代號 00 開頭）
+
+    # 股利
+    ex_dividend_date = Column(Date)                 # 除息日
+    cash_dividend = Column(DECIMAL(8, 4))           # 現金股利（元/股）
+
     # 關係
     klines = relationship("KlineDaily", back_populates="stock", cascade="all, delete-orphan")
+    announcements = relationship("StockAnnouncement", back_populates="stock",
+                                 cascade="all, delete-orphan", order_by="StockAnnouncement.announce_date.desc()")
     
     __table_args__ = (
         Index("idx_stocks_symbol", "symbol"),
@@ -335,6 +351,26 @@ class Alert(BaseModel):
         Index("idx_alerts_symbol", "symbol"),
         Index("idx_alerts_is_active", "is_active"),
         Index("idx_alerts_created_at", "created_at"),
+    )
+
+
+class StockAnnouncement(BaseModel):
+    """重大訊息模型"""
+    __tablename__ = "stock_announcements"
+
+    symbol = Column(String(10), nullable=False, index=True)
+    announce_date = Column(Date, nullable=False)
+    subject = Column(Text)
+    content = Column(Text)
+    source = Column(String(10))   # 'TWSE' or 'TPEx'
+
+    # 關係
+    stock = relationship("Stock", back_populates="announcements",
+                         primaryjoin="StockAnnouncement.symbol == foreign(Stock.symbol)",
+                         foreign_keys="[StockAnnouncement.symbol]")
+
+    __table_args__ = (
+        Index("idx_ann_symbol_date", "symbol", "announce_date"),
     )
 
 

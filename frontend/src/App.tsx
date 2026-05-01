@@ -41,11 +41,21 @@ interface Stock {
   roe?: number | string
   roa?: number | string
   debt_ratio?: number | string
+  // 融資/融券
+  margin_long?: number
+  margin_short?: number
+  // 標記
+  is_attention?: boolean
+  is_disposed?: boolean
+  is_etf?: boolean
+  // 股利
+  ex_dividend_date?: string
+  cash_dividend?: number | string
 }
 
 // ─── 通用篩選條件型別 ─────────────────────────────────────────────────────────
 
-type FilterOp = 'min' | 'max' | 'contains' | 'is_true'
+type FilterOp = 'min' | 'max' | 'contains' | 'is_true' | 'is_false'
 
 interface FilterCondition {
   field: string
@@ -60,6 +70,7 @@ function buildUrl(base: string, conditions: FilterCondition[]): string {
     if (op === 'max')      url += `&${field}_max=${value}`
     if (op === 'contains') url += `&${field}_contains=${encodeURIComponent(String(value))}`
     if (op === 'is_true')  url += `&${field}=true`
+    if (op === 'is_false') url += `&${field}=false`
   }
   return url
 }
@@ -93,8 +104,9 @@ type QuickFilterKey =
   | 'low_pe' | 'low_pb' | 'high_eps' | 'high_dividend'
   | 'profitable' | 'losing' | 'revenue_growth'
   | 'high_gross_margin' | 'high_roe' | 'low_debt'
-  | 'etf' | 'close_at_high' | 'high_turnover'
-  | 'foreign_buy' | 'trust_buy'
+  | 'etf' | 'no_etf' | 'close_at_high' | 'high_turnover'
+  | 'foreign_buy' | 'trust_buy' | 'high_margin_long'
+  | 'is_attention' | 'is_disposed'
 
 interface QuickFilterDef {
   key: QuickFilterKey
@@ -202,8 +214,25 @@ const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
         conditions: [{ field: 'investment_trust_net_buy', op: 'min', value: 100 }],
       },
       {
+        key: 'high_margin_long', label: '高融資', emoji: '💳', tooltip: '融資餘額 ≥ 1000 張',
+        conditions: [{ field: 'margin_long', op: 'min', value: 1000 }],
+      },
+      {
         key: 'high_turnover', label: '高週轉率', emoji: '🔄', tooltip: '週轉率 ≥ 5%',
         conditions: [{ field: 'turnover_rate', op: 'min', value: 5 }],
+      },
+    ],
+  },
+  {
+    label: '風險',
+    filters: [
+      {
+        key: 'is_attention', label: '注意股', emoji: '⚠️', tooltip: '列入注意交易股票',
+        conditions: [{ field: 'is_attention', op: 'is_true', value: true }],
+      },
+      {
+        key: 'is_disposed', label: '處置股', emoji: '🔴', tooltip: '列入處置股票',
+        conditions: [{ field: 'is_disposed', op: 'is_true', value: true }],
       },
     ],
   },
@@ -211,8 +240,12 @@ const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
     label: '其他',
     filters: [
       {
-        key: 'etf', label: 'ETF', emoji: '📦', tooltip: '名稱含 "ETF"',
-        conditions: [{ field: 'name', op: 'contains', value: 'ETF' }],
+        key: 'etf', label: '只看 ETF', emoji: '📦', tooltip: '只顯示 ETF（代號 00 開頭）',
+        conditions: [{ field: 'is_etf', op: 'is_true', value: true }],
+      },
+      {
+        key: 'no_etf', label: '排除 ETF', emoji: '🚫', tooltip: '排除 ETF，只看個股',
+        conditions: [{ field: 'is_etf', op: 'is_false', value: false }],
       },
       {
         key: 'close_at_high', label: '收在最高', emoji: '🎯', tooltip: '收盤價 = 當日最高價',
@@ -271,6 +304,12 @@ const COLUMN_DEFS: ColumnDef[] = [
   { label: 'ROE%',       key: 'roe',                     group: '財報', defaultVisible: false },
   { label: 'ROA%',       key: 'roa',                     group: '財報', defaultVisible: false },
   { label: '負債比%',   key: 'debt_ratio',              group: '財報', defaultVisible: false },
+  // 籌碼
+  { label: '融資(張)',   key: 'margin_long',             group: '籌碼', defaultVisible: false },
+  { label: '融券(張)',   key: 'margin_short',            group: '籌碼', defaultVisible: false },
+  // 股利
+  { label: '除息日',     key: 'ex_dividend_date',        group: '股利', defaultVisible: false },
+  { label: '現金股利',   key: 'cash_dividend',           group: '股利', defaultVisible: false },
 ]
 
 const COLUMN_GROUPS = Array.from(new Set(COLUMN_DEFS.map(c => c.group)))
@@ -319,6 +358,23 @@ function App() {
   const [showColPanel, setShowColPanel] = useState(false)
   const colPanelRef = useRef<HTMLDivElement>(null)
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ── 重大訊息 modal ────────────────────────────────────────────────────────
+  interface Announcement { id: number; announce_date: string; subject: string; content: string; source: string }
+  const [annModal, setAnnModal] = useState<{ symbol: string; name: string } | null>(null)
+  const [announcements, setAnnouncements] = useState<Announcement[]>([])
+  const [annLoading, setAnnLoading] = useState(false)
+
+  const openAnnouncements = useCallback(async (symbol: string, name: string) => {
+    setAnnModal({ symbol, name })
+    setAnnouncements([])
+    setAnnLoading(true)
+    try {
+      const res = await fetch(`${API_URL}/v1/stocks/${symbol}/announcements?limit=20`)
+      if (res.ok) setAnnouncements(await res.json())
+    } catch {}
+    setAnnLoading(false)
+  }, [])
 
   // 點擊面板外部關閉
   useEffect(() => {
@@ -536,7 +592,19 @@ function App() {
   const renderCell = (s: Stock, key: string): React.ReactNode => {
     switch (key) {
       case 'symbol':       return <span style={{ color: '#f90', fontWeight: 600 }}>{s.symbol}</span>
-      case 'name':         return <span style={{ color: '#fff', whiteSpace: 'nowrap' }}>{s.name}</span>
+      case 'name':         return (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>
+          <span
+            style={{ color: '#fff', cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: '3px' }}
+            title="查看重大訊息"
+            onClick={() => openAnnouncements(s.symbol, s.name)}>
+            {s.name}
+          </span>
+          {s.is_etf && <span style={{ fontSize: '0.68rem', padding: '1px 5px', background: 'rgba(56,139,253,0.2)', color: '#6ea8fe', border: '1px solid rgba(56,139,253,0.35)', borderRadius: '3px', lineHeight: 1.4 }}>ETF</span>}
+          {s.is_attention && <span style={{ fontSize: '0.68rem', padding: '1px 5px', background: 'rgba(255,193,7,0.15)', color: '#ffc107', border: '1px solid rgba(255,193,7,0.35)', borderRadius: '3px', lineHeight: 1.4 }}>⚠️注意</span>}
+          {s.is_disposed  && <span style={{ fontSize: '0.68rem', padding: '1px 5px', background: 'rgba(220,53,69,0.15)', color: '#ff6b6b', border: '1px solid rgba(220,53,69,0.35)', borderRadius: '3px', lineHeight: 1.4 }}>🔴處置</span>}
+        </span>
+      )
       case 'market_type':  return (
         <span style={{
           background: s.market_type === '上市' ? 'rgba(100,149,237,0.2)' : 'rgba(144,238,144,0.2)',
@@ -571,6 +639,10 @@ function App() {
       case 'roe':             return <span style={{ color: '#ccc' }}>{fmt(s.roe)}</span>
       case 'roa':             return <span style={{ color: '#ccc' }}>{fmt(s.roa)}</span>
       case 'debt_ratio':      return <span style={{ color: '#ccc' }}>{fmt(s.debt_ratio)}</span>
+      case 'margin_long':     return <span style={{ color: s.margin_long != null && s.margin_long > 0 ? '#ffc107' : '#aaa' }}>{fmtInt(s.margin_long)}</span>
+      case 'margin_short':    return <span style={{ color: s.margin_short != null && s.margin_short > 0 ? '#ff6b6b' : '#aaa' }}>{fmtInt(s.margin_short)}</span>
+      case 'ex_dividend_date':return <span style={{ color: '#51cf66', fontSize: '0.83rem' }}>{s.ex_dividend_date || '--'}</span>
+      case 'cash_dividend':   return <span style={{ color: '#51cf66' }}>{fmt(s.cash_dividend, 2)}</span>
       default:                return '--'
     }
   }
@@ -857,8 +929,80 @@ function App() {
       </main>
 
       <footer className="app-footer">
-        <p>© {new Date().getFullYear()} 台股觀測站 | 版本 1.0.0</p>
+        <p>© {new Date().getFullYear()} 台股觀測站 | 版本 2.0.0</p>
       </footer>
+
+      {/* ── 重大訊息 Modal ── */}
+      {annModal && (
+        <div
+          onClick={() => setAnnModal(null)}
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000, padding: '20px',
+          }}>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: '#1a1d2e', border: '1px solid rgba(255,255,255,0.12)',
+              borderRadius: '10px', padding: '20px 24px', width: '100%', maxWidth: '680px',
+              maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+              boxShadow: '0 12px 48px rgba(0,0,0,0.6)',
+            }}>
+            {/* 標題列 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+              <div>
+                <span style={{ color: '#f90', fontWeight: 700, marginRight: '8px' }}>{annModal.symbol}</span>
+                <span style={{ color: '#fff', fontWeight: 600 }}>{annModal.name}</span>
+                <span style={{ color: '#555', fontSize: '0.82rem', marginLeft: '8px' }}>重大訊息</span>
+              </div>
+              <button
+                onClick={() => setAnnModal(null)}
+                style={{ background: 'transparent', border: 'none', color: '#666', cursor: 'pointer', fontSize: '1.2rem', lineHeight: 1, padding: '2px 6px' }}>
+                ✕
+              </button>
+            </div>
+
+            {/* 訊息列表 */}
+            <div style={{ overflowY: 'auto', flex: 1 }}>
+              {annLoading && (
+                <div style={{ textAlign: 'center', padding: '2rem', color: '#666' }}>⏳ 載入中...</div>
+              )}
+              {!annLoading && announcements.length === 0 && (
+                <div style={{ textAlign: 'center', padding: '2rem', color: '#555' }}>
+                  <div style={{ fontSize: '1.5rem', marginBottom: '6px' }}>📭</div>
+                  尚無重大訊息記錄
+                </div>
+              )}
+              {announcements.map(ann => (
+                <div key={ann.id} style={{
+                  padding: '12px 14px', marginBottom: '8px',
+                  background: 'rgba(255,255,255,0.04)', borderRadius: '6px',
+                  borderLeft: `3px solid ${ann.source === 'TWSE' ? '#6495ed' : '#90ee90'}`,
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                    <span style={{ color: '#aaa', fontSize: '0.78rem' }}>{ann.announce_date}</span>
+                    <span style={{
+                      fontSize: '0.7rem', padding: '1px 6px',
+                      background: ann.source === 'TWSE' ? 'rgba(100,149,237,0.15)' : 'rgba(144,238,144,0.12)',
+                      color: ann.source === 'TWSE' ? '#6495ed' : '#90ee90',
+                      border: `1px solid ${ann.source === 'TWSE' ? 'rgba(100,149,237,0.3)' : 'rgba(144,238,144,0.2)'}`,
+                      borderRadius: '3px',
+                    }}>{ann.source}</span>
+                  </div>
+                  <div style={{ color: '#ddd', fontSize: '0.88rem', fontWeight: 500 }}>{ann.subject || '（無主旨）'}</div>
+                  {ann.content && (
+                    <div style={{ color: '#888', fontSize: '0.8rem', marginTop: '5px', lineHeight: 1.5,
+                      maxHeight: '80px', overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+                      {ann.content}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
