@@ -148,7 +148,7 @@ class Stock(BaseModel):
     # 關係
     klines = relationship("KlineDaily", back_populates="stock", cascade="all, delete-orphan")
     announcements = relationship("StockAnnouncement", back_populates="stock",
-                                 cascade="all, delete-orphan", order_by="StockAnnouncement.announce_date.desc()")
+                                 cascade="all, delete-orphan")
     
     __table_args__ = (
         Index("idx_stocks_symbol", "symbol"),
@@ -354,15 +354,17 @@ class Alert(BaseModel):
     )
 
 
-class StockAnnouncement(BaseModel):
-    """重大訊息模型"""
+class StockAnnouncement(Base):
+    """重大訊息模型（id 為 SERIAL integer，與 migrate_v2.py 一致）"""
     __tablename__ = "stock_announcements"
 
-    symbol = Column(String(10), nullable=False, index=True)
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    symbol        = Column(String(10), nullable=False, index=True)
     announce_date = Column(Date, nullable=False)
-    subject = Column(Text)
-    content = Column(Text)
-    source = Column(String(10))   # 'TWSE' or 'TPEx'
+    subject       = Column(Text)
+    content       = Column(Text)
+    source        = Column(String(10))   # 'TWSE' or 'TPEx'
+    created_at    = Column(DateTime(timezone=True), server_default="NOW()")
 
     # 關係
     stock = relationship("Stock", back_populates="announcements",
