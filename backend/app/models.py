@@ -147,8 +147,6 @@ class Stock(BaseModel):
 
     # 關係
     klines = relationship("KlineDaily", back_populates="stock", cascade="all, delete-orphan")
-    announcements = relationship("StockAnnouncement", back_populates="stock",
-                                 cascade="all, delete-orphan")
     
     __table_args__ = (
         Index("idx_stocks_symbol", "symbol"),
@@ -364,12 +362,7 @@ class StockAnnouncement(Base):
     subject       = Column(Text)
     content       = Column(Text)
     source        = Column(String(10))   # 'TWSE' or 'TPEx'
-    created_at    = Column(DateTime(timezone=True), server_default="NOW()")
-
-    # 關係
-    stock = relationship("Stock", back_populates="announcements",
-                         primaryjoin="StockAnnouncement.symbol == foreign(Stock.symbol)",
-                         foreign_keys="[StockAnnouncement.symbol]")
+    created_at    = Column(DateTime(timezone=True))
 
     __table_args__ = (
         Index("idx_ann_symbol_date", "symbol", "announce_date"),
