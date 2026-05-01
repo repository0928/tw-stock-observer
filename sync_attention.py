@@ -1,7 +1,14 @@
 """
 同步注意股票 / 處置股票標記
-上市：TWSE openapi announcement/attention + announcement/disposition
-上櫃：TPEx openapi（嘗試對應端點）
+上市：
+  注意 → openapi.twse.com.tw/v1/announcement/notetrans  (Code)
+  處置 → openapi.twse.com.tw/v1/announcement/punish     (Code)
+上櫃：
+  注意 → tpex_trading_warning_information (SecuritiesCompanyCode)
+         tpex_trading_warning_note         (SecuritiesCompanyCode)
+         tpex_esb_warning_information      (證券代號)
+  處置 → tpex_disposal_information         (SecuritiesCompanyCode)
+         tpex_esb_disposal_information     (證券代號)
 
 策略：先全清 → 再逐一打標（確保下架的標記能即時移除）
 """
@@ -21,164 +28,140 @@ conn = psycopg2.connect(
 cur = conn.cursor()
 
 
-def extract_symbol(item):
-    """從各種欄位名稱取得股票代號"""
-    for key in ("公司代號", "SecuritiesCompanyCode", "CompanyID", "stockNo", "Code"):
-        v = item.get(key, "")
-        if v:
-            return str(v).strip()
+def fetch_json(url, label):
+    try:
+        r = requests.get(url, timeout=20, verify=False, headers={"User-Agent": "Mozilla/5.0"})
+        body = r.text.strip()
+        if r.status_code == 200 and (body.startswith('[') or body.startswith('{')):
+            data = r.json()
+            items = data if isinstance(data, list) else data.get("data", [])
+            print(f"  {label}: {len(items)} 筆")
+            return items
+        else:
+            print(f"  {label}: HTTP {r.status_code}，非 JSON，跳過")
+            return []
+    except Exception as e:
+        print(f"  {label} 失敗: {e}")
+        return []
+
+
+def extract_code(item):
+    for key in ("Code", "SecuritiesCompanyCode", "CompanyID", "證券代號", "公司代號", "stockNo"):
+        v = str(item.get(key, "")).strip()
+        if v and v.isdigit():
+            return v
     return ""
 
 
-# ── Step 1：全清標記 ────────────────────────────────────────
+# ── Step 1：全清標記 ─────────────────────────────────────────────
 print("清除所有注意/處置標記...")
 cur.execute("UPDATE stocks SET is_attention = FALSE, is_disposed = FALSE")
 conn.commit()
 print(f"  ✅ 已清除（影響 {cur.rowcount} 筆）")
 
 
-# ── Step 2：上市注意股票 ────────────────────────────────────
-print("下載上市注意股票...")
-ATTN_URLS = [
-    # TWSE rwd API（與 T86/MI_MARGN 同域，較穩定）
-    "https://www.twse.com.tw/rwd/zh/announcement/ATTENTION?response=json",
-    "https://www.twse.com.tw/rwd/zh/notice/attention?response=json",
-    # openapi 備選（目前回傳 HTML，留存以備日後修復）
-    "https://openapi.twse.com.tw/v1/announcement/attention",
-    "https://openapi.twse.com.tw/v1/opendata/t49sb12_1",
-]
-attn_items = []
-for url in ATTN_URLS:
-    try:
-        r = requests.get(url, timeout=20, verify=False)
-        if r.status_code == 200 and r.text.strip().startswith('['):
-            attn_items = r.json()
-            print(f"  使用 URL: {url}，共 {len(attn_items)} 筆")
-            if attn_items:
-                print(f"  欄位: {list(attn_items[0].keys())}")
-            break
-        else:
-            print(f"  {url} → HTTP {r.status_code}，非 JSON")
-    except Exception as e:
-        print(f"  {url} → 失敗: {e}")
+# ── Step 2：上市注意股票 ─────────────────────────────────────────
+print("\n下載上市注意股票...")
+attn_tse = fetch_json(
+    "https://openapi.twse.com.tw/v1/announcement/notetrans",
+    "TWSE notetrans"
+)
 
-attn_count = 0
-for item in attn_items:
-    symbol = extract_symbol(item)
-    if not symbol.isdigit():
+attn_tse_count = 0
+for item in attn_tse:
+    code = extract_code(item)
+    if not code:
         continue
-    try:
-        cur.execute("UPDATE stocks SET is_attention = TRUE WHERE symbol = %s", (symbol,))
-        if cur.rowcount > 0:
-            attn_count += 1
-    except Exception as e:
-        print(f"  注意 {symbol} 失敗: {e}")
-
+    cur.execute("UPDATE stocks SET is_attention = TRUE WHERE symbol = %s", (code,))
+    if cur.rowcount > 0:
+        attn_tse_count += 1
 conn.commit()
-print(f"✅ 上市注意股票標記: {attn_count} 檔")
+print(f"✅ 上市注意股票標記: {attn_tse_count} 檔")
 
 
-# ── Step 3：上市處置股票 ────────────────────────────────────
-print("下載上市處置股票...")
-DISP_URLS = [
-    # TWSE rwd API
-    "https://www.twse.com.tw/rwd/zh/announcement/DISPOSE?response=json",
-    "https://www.twse.com.tw/rwd/zh/notice/dispose?response=json",
-    # openapi 備選
-    "https://openapi.twse.com.tw/v1/announcement/disposition",
-    "https://openapi.twse.com.tw/v1/opendata/t49sb12_2",
-]
-disp_items = []
-for url in DISP_URLS:
-    try:
-        r2 = requests.get(url, timeout=20, verify=False)
-        if r2.status_code == 200 and r2.text.strip().startswith('['):
-            disp_items = r2.json()
-            print(f"  使用 URL: {url}，共 {len(disp_items)} 筆")
-            if disp_items:
-                print(f"  欄位: {list(disp_items[0].keys())}")
-            break
-        else:
-            print(f"  {url} → HTTP {r2.status_code}，非 JSON")
-    except Exception as e:
-        print(f"  {url} → 失敗: {e}")
+# ── Step 3：上市處置股票 ─────────────────────────────────────────
+print("\n下載上市處置股票...")
+disp_tse = fetch_json(
+    "https://openapi.twse.com.tw/v1/announcement/punish",
+    "TWSE punish"
+)
 
-disp_count = 0
-for item in disp_items:
-    symbol = extract_symbol(item)
-    if not symbol.isdigit():
+disp_tse_count = 0
+for item in disp_tse:
+    code = extract_code(item)
+    if not code:
         continue
-    try:
-        cur.execute("UPDATE stocks SET is_disposed = TRUE WHERE symbol = %s", (symbol,))
-        if cur.rowcount > 0:
-            disp_count += 1
-    except Exception as e:
-        print(f"  處置 {symbol} 失敗: {e}")
-
+    cur.execute("UPDATE stocks SET is_disposed = TRUE WHERE symbol = %s", (code,))
+    if cur.rowcount > 0:
+        disp_tse_count += 1
 conn.commit()
-print(f"✅ 上市處置股票標記: {disp_count} 檔")
+print(f"✅ 上市處置股票標記: {disp_tse_count} 檔")
 
 
-# ── Step 4：上櫃注意/處置 ────────────────────────────────────
-print("下載上櫃注意/處置資料...")
+# ── Step 4：上櫃注意股票 ─────────────────────────────────────────
+print("\n下載上櫃注意股票...")
 OTC_ATTN_URLS = [
-    "https://www.tpex.org.tw/openapi/v1/tpex_attention_stock",
-    "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_attention",
-    "https://www.tpex.org.tw/openapi/v1/tpex_attention_stocks_info",
-    "https://www.tpex.org.tw/openapi/v1/tpex_dailyquotes_attention",
-]
-OTC_DISP_URLS = [
-    "https://www.tpex.org.tw/openapi/v1/tpex_disposition_stock",
-    "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_disposition",
-    "https://www.tpex.org.tw/openapi/v1/tpex_disposition_stocks_info",
+    ("https://www.tpex.org.tw/openapi/v1/tpex_trading_warning_information", "TPEx warning_info"),
+    ("https://www.tpex.org.tw/openapi/v1/tpex_trading_warning_note",        "TPEx warning_note"),
+    ("https://www.tpex.org.tw/openapi/v1/tpex_esb_warning_information",     "TPEx esb_warning"),
 ]
 
-def try_fetch_json(urls, label):
-    for url in urls:
-        try:
-            r = requests.get(url, timeout=15, verify=False)
-            if r.status_code == 200 and r.text.strip().startswith('['):
-                items = r.json()
-                print(f"  {label} 使用: {url}，共 {len(items)} 筆")
-                return items
-            else:
-                print(f"  {url} → HTTP {r.status_code}，非 JSON")
-        except Exception as e:
-            print(f"  {url} → 失敗: {e}")
-    print(f"  ⚠️  {label} 無可用 URL，跳過")
-    return []
-
-otc_attn = try_fetch_json(OTC_ATTN_URLS, "上櫃注意")
-otc_disp = try_fetch_json(OTC_DISP_URLS, "上櫃處置")
+otc_attn_codes = set()
+for url, label in OTC_ATTN_URLS:
+    for item in fetch_json(url, label):
+        code = extract_code(item)
+        if code:
+            otc_attn_codes.add(code)
 
 otc_attn_count = 0
-for item in otc_attn:
-    symbol = extract_symbol(item)
-    if not symbol.isdigit():
-        continue
-    cur.execute("UPDATE stocks SET is_attention = TRUE WHERE symbol = %s", (symbol,))
+for code in otc_attn_codes:
+    cur.execute("UPDATE stocks SET is_attention = TRUE WHERE symbol = %s", (code,))
     if cur.rowcount > 0:
         otc_attn_count += 1
+conn.commit()
+print(f"✅ 上櫃注意股票標記: {otc_attn_count} 檔（共收集 {len(otc_attn_codes)} 個代號）")
+
+
+# ── Step 5：上櫃處置股票 ─────────────────────────────────────────
+print("\n下載上櫃處置股票...")
+OTC_DISP_URLS = [
+    ("https://www.tpex.org.tw/openapi/v1/tpex_disposal_information",     "TPEx disposal_info"),
+    ("https://www.tpex.org.tw/openapi/v1/tpex_esb_disposal_information", "TPEx esb_disposal"),
+]
+
+otc_disp_codes = set()
+for url, label in OTC_DISP_URLS:
+    for item in fetch_json(url, label):
+        code = extract_code(item)
+        if code:
+            otc_disp_codes.add(code)
 
 otc_disp_count = 0
-for item in otc_disp:
-    symbol = extract_symbol(item)
-    if not symbol.isdigit():
-        continue
-    cur.execute("UPDATE stocks SET is_disposed = TRUE WHERE symbol = %s", (symbol,))
+for code in otc_disp_codes:
+    cur.execute("UPDATE stocks SET is_disposed = TRUE WHERE symbol = %s", (code,))
     if cur.rowcount > 0:
         otc_disp_count += 1
-
 conn.commit()
-print(f"✅ 上櫃注意: {otc_attn_count} 檔，處置: {otc_disp_count} 檔")
+print(f"✅ 上櫃處置股票標記: {otc_disp_count} 檔（共收集 {len(otc_disp_codes)} 個代號）")
 
-# 統計
+
+# ── 統計 ──────────────────────────────────────────────────────────
 cur.execute("SELECT COUNT(*) FROM stocks WHERE is_attention = TRUE")
 total_attn = cur.fetchone()[0]
 cur.execute("SELECT COUNT(*) FROM stocks WHERE is_disposed = TRUE")
 total_disp = cur.fetchone()[0]
 print(f"\n📊 目前標記：注意 {total_attn} 檔，處置 {total_disp} 檔")
 
+cur.execute("SELECT symbol, name FROM stocks WHERE is_attention = TRUE ORDER BY symbol")
+rows = cur.fetchall()
+if rows:
+    print("  注意股：", ", ".join(f"{r[0]} {r[1]}" for r in rows))
+
+cur.execute("SELECT symbol, name FROM stocks WHERE is_disposed = TRUE ORDER BY symbol LIMIT 10")
+rows = cur.fetchall()
+if rows:
+    print("  處置股(前10)：", ", ".join(f"{r[0]} {r[1]}" for r in rows))
+
 cur.close()
 conn.close()
-print("✅ 注意/處置標記同步完成！")
+print("\n✅ 注意/處置標記同步完成！")
