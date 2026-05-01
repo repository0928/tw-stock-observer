@@ -7,7 +7,7 @@
 """
 import requests
 import psycopg2
-from datetime import datetime, date, UTC
+from datetime import datetime, date, timezone
 import urllib3
 urllib3.disable_warnings()
 
@@ -114,7 +114,7 @@ for item in items_tse:
                 cash_dividend    = COALESCE(%s, cash_dividend),
                 updated_at       = %s
                WHERE symbol = %s""",
-            (ex_date, cash_div, datetime.now(UTC), symbol)
+            (ex_date, cash_div, datetime.now(timezone.utc), symbol)
         )
         cur.execute("RELEASE SAVEPOINT sp_div")
         updated_tse += 1
@@ -182,7 +182,7 @@ for item in items_otc:
                 cash_dividend    = COALESCE(%s, cash_dividend),
                 updated_at       = %s
                WHERE symbol = %s""",
-            (ex_date, cash_div, datetime.now(UTC), symbol)
+            (ex_date, cash_div, datetime.now(timezone.utc), symbol)
         )
         cur.execute("RELEASE SAVEPOINT sp_otc_div")
         updated_otc += 1

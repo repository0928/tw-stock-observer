@@ -168,8 +168,9 @@ const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
         conditions: [{ field: 'eps', op: 'min', value: 5 }],
       },
       {
-        key: 'high_dividend', label: '高殖利率', emoji: '💸', tooltip: '殖利率 ≥ 4%',
+        key: 'high_dividend', label: '高殖利率', emoji: '💸', tooltip: '殖利率 ≥ 4%（股利資料同步中）',
         conditions: [{ field: 'dividend_yield', op: 'min', value: 4 }],
+        disabled: true,
       },
     ],
   },
@@ -181,12 +182,14 @@ const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
         conditions: [{ field: 'gross_margin', op: 'min', value: 30 }],
       },
       {
-        key: 'high_roe', label: '高 ROE', emoji: '📐', tooltip: 'ROE ≥ 15%',
+        key: 'high_roe', label: '高 ROE', emoji: '📐', tooltip: 'ROE ≥ 15%（資料同步中）',
         conditions: [{ field: 'roe', op: 'min', value: 15 }],
+        disabled: true,
       },
       {
-        key: 'low_debt', label: '低負債', emoji: '🛡️', tooltip: '負債比率 ≤ 40%',
+        key: 'low_debt', label: '低負債', emoji: '🛡️', tooltip: '負債比率 ≤ 40%（資料同步中）',
         conditions: [{ field: 'debt_ratio', op: 'max', value: 40 }],
+        disabled: true,
       },
       {
         key: 'profitable', label: '獲利股', emoji: '✅', tooltip: '淨利 > 0',

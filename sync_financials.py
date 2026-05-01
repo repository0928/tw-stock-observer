@@ -9,7 +9,7 @@ ROE / ROA / 負債比：現行 TWSE openapi 無對應端點，暫不更新。
 """
 import requests
 import psycopg2
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import urllib3
 urllib3.disable_warnings()
 
@@ -74,7 +74,7 @@ for item in items:
                     net_margin       = COALESCE(%s, net_margin),
                     updated_at       = %s
                    WHERE symbol = %s""",
-                (gross, op, net, datetime.now(UTC), symbol)
+                (gross, op, net, datetime.now(timezone.utc), symbol)
             )
             cur.execute("RELEASE SAVEPOINT sp_fin")
             updated_margin += 1
@@ -121,7 +121,7 @@ for item in items2:
                     eps        = COALESCE(%s, eps),
                     updated_at = %s
                    WHERE symbol = %s""",
-                (eps, datetime.now(UTC), symbol)
+                (eps, datetime.now(timezone.utc), symbol)
             )
             cur.execute("RELEASE SAVEPOINT sp_eps")
             updated_eps += 1
@@ -204,7 +204,7 @@ for item in items_otc_margin:
                     net_margin       = COALESCE(%s, net_margin),
                     updated_at       = %s
                    WHERE symbol = %s""",
-                (gross, op, net, datetime.now(UTC), symbol)
+                (gross, op, net, datetime.now(timezone.utc), symbol)
             )
             cur.execute("RELEASE SAVEPOINT sp_otc_fin")
             updated_otc_margin += 1
@@ -269,7 +269,7 @@ for item in items_otc_eps:
                     eps        = COALESCE(%s, eps),
                     updated_at = %s
                    WHERE symbol = %s""",
-                (eps, datetime.now(UTC), symbol)
+                (eps, datetime.now(timezone.utc), symbol)
             )
             cur.execute("RELEASE SAVEPOINT sp_otc_eps")
             updated_otc_eps += 1

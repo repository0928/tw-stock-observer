@@ -7,7 +7,7 @@
 """
 import requests
 import psycopg2
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import urllib3
 urllib3.disable_warnings()
 
@@ -40,16 +40,15 @@ def parse_int(val):
 # [3]  融資賣出（股）
 # [4]  融資現金償還（股）
 # [5]  融資前日餘額（股）
-# [6]  融資今日餘額（股）   ← margin_long
+# [6]  融資今日餘額（股）   <- margin_long
 # [7]  融資限額（股）
 # [8]  融券買進（股）
 # [9]  融券賣出（股）
 # [10] 融券現券償還（股）
 # [11] 融券前日餘額（股）
-# [12] 融券今日餘額（股）   ← margin_short
+# [12] 融券今日餘額（股）   <- margin_short
 # [13] 融券限額（股）
 print("下載上市融資/融券資料 (MI_MARGN)...")
-# MI_MARGN 不需要日期（selectType=ALL 取全部），若為假日/非交易日會回 stat=NODATA
 MARGN_URLS = [
     "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?response=json&selectType=ALL",
     "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?response=json&selectType=MS",
@@ -58,26 +57,31 @@ MARGN_URLS = [
 rows = []
 for _url in MARGN_URLS:
     try:
-        r = requests.get(_url, timeout=30, verify=False)
+        r = requests.get(_url, timeout=30, verify=False, headers={"User-Agent": "Mozilla/5.0"})
         body = r.text.strip()
-        if not body or body.startswith('<'):
-            print(f"  {_url} → 非 JSON，跳過")
+        if not body or body.startswith("<"):
+            print(f"  {_url} -> 非 JSON，跳過")
             continue
         data = r.json()
         if isinstance(data, list):
             rows = data
             print(f"  使用 URL: {_url}，共 {len(rows)} 筆")
             break
-        rows = data.get("data", [])
         stat = data.get("stat", "")
+        # MI_MARGN 新版格式：回傳 tables 陣列，融資融券明細在 tables[1]
+        if "tables" in data:
+            tables = data["tables"]
+            rows = tables[1]["data"] if len(tables) > 1 else (tables[0]["data"] if tables else [])
+        else:
+            rows = data.get("data", [])
         print(f"  使用 URL: {_url}，stat={stat}，共 {len(rows)} 筆")
-        if rows or stat == "OK":
+        if rows:
             break
         print(f"  stat={stat}（可能為假日/非交易日），嘗試下一 URL")
     except Exception as e:
-        print(f"  {_url} → 失敗: {e}")
+        print(f"  {_url} -> 失敗: {e}")
 if not rows:
-    print("  ⚠️  MI_MARGN 無資料（假日或非交易時間），跳過")
+    print("  MI_MARGN 無資料（假日或非交易時間），跳過")
 
 updated_tse = 0
 for row in rows:
@@ -87,30 +91,21 @@ for row in rows:
     if not symbol.isdigit():
         continue
     try:
-        # 單位：股 → 張（/1000）
-        long_shares  = parse_int(row[6])   # 融資今日餘額
-        short_shares = parse_int(row[12])  # 融券今日餘額
-
-        margin_long  = round(long_shares  / 1000) if long_shares  is not None else None
-        margin_short = round(short_shares / 1000) if short_shares is not None else None
-
+        # MI_MARGN 單位為千股，1 千股 = 1 張，直接使用不需除以 1000
+        margin_long  = parse_int(row[6])
+        margin_short = parse_int(row[12])
         if margin_long is None and margin_short is None:
             continue
-
         cur.execute(
-            """UPDATE stocks SET
-                margin_long  = %s,
-                margin_short = %s,
-                updated_at   = %s
-               WHERE symbol = %s""",
-            (margin_long, margin_short, datetime.now(UTC), symbol)
+            """UPDATE stocks SET margin_long=%s, margin_short=%s, updated_at=%s WHERE symbol=%s""",
+            (margin_long, margin_short, datetime.now(timezone.utc), symbol)
         )
         updated_tse += 1
     except Exception as e:
         print(f"  處理上市 {symbol} 失敗: {e}")
 
 conn.commit()
-print(f"✅ 上市融資/融券更新: {updated_tse} 筆")
+print(f"上市融資/融券更新: {updated_tse} 筆")
 
 
 # ==================== 上櫃融資/融券 ====================
@@ -126,19 +121,19 @@ otc_items = []
 for url in OTC_MARGIN_URLS:
     try:
         r2 = requests.get(url, timeout=15, verify=False)
-        if r2.status_code == 200 and r2.text.strip().startswith('['):
+        if r2.status_code == 200 and r2.text.strip().startswith("["):
             otc_items = r2.json()
             print(f"  使用 URL: {url}，共 {len(otc_items)} 筆")
             if otc_items:
                 print(f"  欄位: {list(otc_items[0].keys())}")
             break
         else:
-            print(f"  {url} → HTTP {r2.status_code}，非 JSON")
+            print(f"  {url} -> HTTP {r2.status_code}，非 JSON")
     except Exception as e:
-        print(f"  {url} → 失敗: {e}")
+        print(f"  {url} -> 失敗: {e}")
 
 if not otc_items:
-    print("  ⚠️  上櫃融資/融券 API 無可用 URL，跳過")
+    print("  上櫃融資/融券 API 無可用 URL，跳過")
 
 updated_otc = 0
 for item in otc_items:
@@ -150,7 +145,6 @@ for item in otc_items:
     if not symbol.isdigit():
         continue
     try:
-        # 嘗試多種欄位名稱
         long_val = parse_int(
             item.get("MarginPurchaseTodayBalance") or
             item.get("MarginBalance") or
@@ -163,24 +157,15 @@ for item in otc_items:
             item.get("融券餘額") or
             item.get("融券今日餘額")
         )
-
-        # TPEx 單位推測：若值很大則可能是股，需/1000；若合理範圍則已是張
-        # 保守做法：若 > 1億則推測為股，/1000
         if long_val is not None and long_val > 100_000_000:
             long_val = round(long_val / 1000)
         if short_val is not None and short_val > 100_000_000:
             short_val = round(short_val / 1000)
-
         if long_val is None and short_val is None:
             continue
-
         cur.execute(
-            """UPDATE stocks SET
-                margin_long  = %s,
-                margin_short = %s,
-                updated_at   = %s
-               WHERE symbol = %s""",
-            (long_val, short_val, datetime.now(UTC), symbol)
+            """UPDATE stocks SET margin_long=%s, margin_short=%s, updated_at=%s WHERE symbol=%s""",
+            (long_val, short_val, datetime.now(timezone.utc), symbol)
         )
         updated_otc += 1
     except Exception as e:
@@ -189,5 +174,5 @@ for item in otc_items:
 conn.commit()
 cur.close()
 conn.close()
-print(f"✅ 上櫃融資/融券更新: {updated_otc} 筆")
-print("✅ 融資/融券同步完成！")
+print(f"上櫃融資/融券更新: {updated_otc} 筆")
+print("融資/融券同步完成！")
