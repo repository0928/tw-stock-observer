@@ -59,6 +59,7 @@ class StockResponse(StockBase):
     turnover_rate: Optional[Decimal] = None
 
     # 月營收
+    revenue_note: Optional[str] = None
     revenue_yoy: Optional[Decimal] = None
     revenue_mom: Optional[Decimal] = None
 

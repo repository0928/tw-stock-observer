@@ -45,7 +45,7 @@ NUMERIC_FILTER_FIELDS = {
 BOOLEAN_FILTER_FIELDS = {"is_attention", "is_disposed", "is_etf", "is_active", "is_suspended"}
 
 # 允許透過 {field}_contains 篩選的字串欄位
-STRING_FILTER_FIELDS = {"name", "symbol", "sector", "industry"}
+STRING_FILTER_FIELDS = {"name", "symbol", "sector", "industry", "revenue_note"}
 
 logger = logging.getLogger(__name__)
 

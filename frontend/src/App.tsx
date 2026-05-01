@@ -28,6 +28,7 @@ interface Stock {
   revenue?: number | string
   net_income?: number | string
   // 月營收
+  revenue_note?: string | null
   revenue_yoy?: number | string
   revenue_mom?: number | string
   // 三大法人（張）
@@ -107,6 +108,7 @@ type QuickFilterKey =
   | 'etf' | 'no_etf' | 'close_at_high' | 'high_turnover'
   | 'foreign_buy' | 'trust_buy' | 'high_margin_long'
   | 'is_attention' | 'is_disposed'
+  | 'demand_increase'
 
 interface QuickFilterDef {
   key: QuickFilterKey
@@ -203,6 +205,10 @@ const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
         key: 'revenue_growth', label: '營收成長 20%+', emoji: '📊', tooltip: '月營收年增率 ≥ 20%',
         conditions: [{ field: 'revenue_yoy', op: 'min', value: 20 }],
       },
+      {
+        key: 'demand_increase', label: '需求增加', emoji: '📈', tooltip: '當月月營收備註含「需求增加」',
+        conditions: [{ field: 'revenue_note', op: 'contains', value: '需求增加' }],
+      },
     ],
   },
   {
@@ -296,6 +302,7 @@ const COLUMN_DEFS: ColumnDef[] = [
   // 月營收
   { label: '月營收年增%', key: 'revenue_yoy',           group: '月營收', defaultVisible: false },
   { label: '月營收月增%', key: 'revenue_mom',           group: '月營收', defaultVisible: false },
+  { label: '月營收備註', key: 'revenue_note',           group: '月營收', defaultVisible: false },
   // 三大法人
   { label: '外資(張)',   key: 'foreign_net_buy',         group: '法人', defaultVisible: false },
   { label: '投信(張)',   key: 'investment_trust_net_buy', group: '法人', defaultVisible: false },
@@ -633,6 +640,7 @@ function App() {
       case 'net_income':   return <span style={{ color: netIncomeColor(s.net_income) }}>{fmtThousands(s.net_income)}</span>
       case 'revenue_yoy':  return <span style={{ color: yoyColor(s.revenue_yoy) }}>{fmt(s.revenue_yoy)}</span>
       case 'revenue_mom':  return <span style={{ color: yoyColor(s.revenue_mom) }}>{fmt(s.revenue_mom)}</span>
+      case 'revenue_note': return <span style={{ color: '#aaa', fontSize: '0.8rem', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }} title={s.revenue_note ?? ''}>{s.revenue_note ?? '—'}</span>
       case 'foreign_net_buy':         return <span style={{ color: instColor(s.foreign_net_buy) }}>{fmtInt(s.foreign_net_buy)}</span>
       case 'investment_trust_net_buy':return <span style={{ color: instColor(s.investment_trust_net_buy) }}>{fmtInt(s.investment_trust_net_buy)}</span>
       case 'dealer_net_buy':          return <span style={{ color: instColor(s.dealer_net_buy) }}>{fmtInt(s.dealer_net_buy)}</span>

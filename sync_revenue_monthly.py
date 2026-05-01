@@ -5,7 +5,7 @@
 """
 import requests
 import psycopg2
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import urllib3
 urllib3.disable_warnings()
 
@@ -79,7 +79,7 @@ def sync_revenue(label, items):
                     revenue_mom = %s,
                     updated_at  = %s
                    WHERE symbol = %s""",
-                (yoy, mom, datetime.now(UTC), symbol)
+                (yoy, mom, datetime.now(timezone.utc), symbol)
             )
             cur.execute("RELEASE SAVEPOINT sp_rev")
             updated += 1

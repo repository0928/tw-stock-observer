@@ -116,6 +116,7 @@ class Stock(BaseModel):
     turnover_rate = Column(DECIMAL(8, 4))           # 週轉率(%)
 
     # 月營收
+    revenue_note = Column(Text)                     # 月營收備註（MOPS 公告說明）
     revenue_yoy = Column(DECIMAL(8, 2))             # 月營收年增率(%)
     revenue_mom = Column(DECIMAL(8, 2))             # 月營收月增率(%)
 
