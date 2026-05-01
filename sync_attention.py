@@ -7,7 +7,7 @@
 """
 import requests
 import psycopg2
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import urllib3
 urllib3.disable_warnings()
 

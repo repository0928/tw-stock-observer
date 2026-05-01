@@ -9,8 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, R
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, distinct
 from app.database import get_db
-from app.schemas import StockResponse, StockQuoteResponse, KlineDailyResponse
-from app.models import Stock
+from app.schemas import StockResponse, StockQuoteResponse, KlineDailyResponse, AnnouncementOut
+from app.models import Stock, StockAnnouncement
 from app.services.stock_service import StockService
 
 # ==================== 通用篩選白名單 ====================
@@ -31,11 +31,18 @@ NUMERIC_FILTER_FIELDS = {
     # 財報
     "gross_margin", "operating_margin", "net_margin",
     "roe", "roa", "debt_ratio",
+    # 融資/融券
+    "margin_long", "margin_short",
+    # 股利
+    "cash_dividend",
     # 預留擴充
     "market_cap", "book_value_per_share",
     "inventory_turnover", "receivable_turnover", "asset_turnover",
     "current_ratio", "quick_ratio",
 }
+
+# 允許布林篩選的欄位
+BOOLEAN_FILTER_FIELDS = {"is_attention", "is_disposed", "is_etf", "is_active", "is_suspended"}
 
 # 允許透過 {field}_contains 篩選的字串欄位
 STRING_FILTER_FIELDS = {"name", "symbol", "sector", "industry"}
@@ -138,6 +145,13 @@ async def list_stocks(
                 field = param[:-9]
                 if field in STRING_FILTER_FIELDS and hasattr(Stock, field):
                     conditions.append(getattr(Stock, field).contains(raw_value))
+
+            # 布林欄位：{field}=true / false
+            elif param in BOOLEAN_FILTER_FIELDS and hasattr(Stock, param):
+                if raw_value.lower() in ("true", "1"):
+                    conditions.append(getattr(Stock, param) == True)
+                elif raw_value.lower() in ("false", "0"):
+                    conditions.append(getattr(Stock, param) == False)
 
         # 特殊篩選：收盤 = 最高（強勢收盤）
         if params.get("close_at_high") == "true":
@@ -312,6 +326,31 @@ async def get_stock_performance(
 async def health_check() -> dict:
     """股票 API 健康檢查"""
     return {"status": "healthy", "service": "stocks"}
+
+
+# ==================== 重大訊息端點 ====================
+
+@router.get("/{symbol}/announcements", response_model=List[AnnouncementOut])
+async def get_stock_announcements(
+    symbol: str,
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> List[AnnouncementOut]:
+    """取得指定股票的重大訊息（最新在前）"""
+    try:
+        stmt = (
+            select(StockAnnouncement)
+            .where(StockAnnouncement.symbol == symbol.upper())
+            .order_by(StockAnnouncement.announce_date.desc(),
+                      StockAnnouncement.id.desc())
+            .limit(limit)
+        )
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
+        return [AnnouncementOut.from_orm(r) for r in rows]
+    except Exception as e:
+        logger.error(f"取得重大訊息失敗 {symbol}: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
 
 
 if __name__ == "__main__":
