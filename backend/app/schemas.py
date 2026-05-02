@@ -43,11 +43,17 @@ class StockResponse(StockBase):
     id: UUID
     created_at: datetime
     updated_at: datetime
+
+    # 基本資料
+    listing_date: Optional[str] = None
+    capital_stock: Optional[int] = None
+    shares: Optional[int] = None
+    website: Optional[str] = None
+    suspension_reason: Optional[str] = None
     is_active: bool
     is_suspended: bool
-    eps: Optional[Decimal] = None
-    pe_ratio: Optional[Decimal] = None
-    pb_ratio: Optional[Decimal] = None
+
+    # 行情
     close_price: Optional[Decimal] = None
     open_price: Optional[Decimal] = None
     high_price: Optional[Decimal] = None
@@ -57,6 +63,15 @@ class StockResponse(StockBase):
     volume: Optional[int] = None
     trade_date: Optional[str] = None
     turnover_rate: Optional[Decimal] = None
+
+    # 估值
+    eps: Optional[Decimal] = None
+    pe_ratio: Optional[Decimal] = None
+    pb_ratio: Optional[Decimal] = None
+
+    # 損益
+    revenue: Optional[int] = None
+    net_income: Optional[int] = None
 
     # 月營收
     revenue_note: Optional[str] = None
@@ -88,6 +103,7 @@ class StockResponse(StockBase):
     # 股利
     ex_dividend_date: Optional[date] = None
     cash_dividend: Optional[Decimal] = None
+    dividend_per_share: Optional[Decimal] = None
     dividend_yield: Optional[Decimal] = None
 
     class Config:
