@@ -1,9 +1,8 @@
 """
 同步股利分派資料
-上市：TWSE openapi t187ap06_L（上市公司股利分派情形）
-上櫃：TPEx openapi（嘗試對應端點）
-
-欄位：ex_dividend_date（除息日）、cash_dividend（現金股利，元）
+上市現金股利：TWSE openapi t187ap45_L（上市公司股利分派 - 可用）
+  欄位：cash_dividend / dividend_per_share
+上市除息日 / 上櫃：t187ap06_L / tpex_dividend_distribution（目前 API 暫時不通）
 """
 import requests
 import psycopg2
@@ -195,3 +194,63 @@ cur.close()
 conn.close()
 print(f"✅ 上櫃股利更新: {updated_otc} 筆")
 print("✅ 股利同步完成！")
+
+
+# ==================== TSE cash dividend (t187ap45_L) ====================
+print("TSE cash dividend (t187ap45_L)...")
+import json as _json
+
+def _sf(v):
+    try:
+        f = float(str(v).replace(',','').strip())
+        return f if f > 0 else None
+    except:
+        return None
+
+r45 = requests.get("https://openapi.twse.com.tw/v1/opendata/t187ap45_L", timeout=30, verify=False)
+tse45 = r45.json() if r45.text.strip().startswith('[') else []
+tse_div = []
+for item in tse45:
+    sym = str(item.get("公司代號","")).strip()
+    if not sym or not sym.isdigit():
+        continue
+    cash = (_sf(item.get("股東配發-盈餘分配之現金股利(元/股)", 0)) or 0) + \
+           (_sf(item.get("股東配發-資本公積發放之現金(元/股)", 0)) or 0)
+    if cash > 0:
+        tse_div.append((cash, sym))
+
+if tse_div:
+    conn2 = psycopg2.connect(host="43.167.191.181", port=31218, database="zeabur", user="root", password="EKo96Bj0UOc4zP2Jp53I1Rtv8H7fmrgh")
+    cur2 = conn2.cursor()
+    for cd, sym in tse_div:
+        cur2.execute("UPDATE stocks SET cash_dividend=%s, dividend_per_share=%s, updated_at=NOW() WHERE symbol=%s", (cd, cd, sym))
+    conn2.commit()
+    cur2.close(); conn2.close()
+    print(f"  TSE done: {len(tse_div)}")
+
+# ==================== OTC cash dividend (mopsfin_t187ap39_O) ====================
+print("OTC cash dividend (mopsfin_t187ap39_O)...")
+r39 = requests.get("https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap39_O", timeout=30, verify=False)
+otc39 = r39.json() if r39.text.strip().startswith('[') else []
+latest = {}
+for item in otc39:
+    sym = str(item.get("公司代號","")).strip()
+    if not sym or not sym.isdigit():
+        continue
+    yr = int(item.get("股利年度", 0) or 0)
+    cash = (_sf(item.get("股東配發內容-盈餘分配之現金股利(元/股)", 0)) or 0) + \
+           (_sf(item.get("股東配發內容-法定盈餘公積、資本公積發放之現金(元/股)", 0)) or 0)
+    if sym not in latest or yr > latest[sym][0]:
+        latest[sym] = (yr, cash if cash > 0 else None)
+
+otc_div = [(v[1], sym) for sym, v in latest.items() if v[1]]
+if otc_div:
+    conn3 = psycopg2.connect(host="43.167.191.181", port=31218, database="zeabur", user="root", password="EKo96Bj0UOc4zP2Jp53I1Rtv8H7fmrgh")
+    cur3 = conn3.cursor()
+    for cd, sym in otc_div:
+        cur3.execute("UPDATE stocks SET cash_dividend=%s, dividend_per_share=%s, updated_at=NOW() WHERE symbol=%s", (cd, cd, sym))
+    conn3.commit()
+    cur3.close(); conn3.close()
+    print(f"  OTC done: {len(otc_div)}")
+
+print("dividend sync complete!")
