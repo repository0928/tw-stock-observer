@@ -88,6 +88,7 @@ class StockResponse(StockBase):
     # 股利
     ex_dividend_date: Optional[date] = None
     cash_dividend: Optional[Decimal] = None
+    dividend_yield: Optional[Decimal] = None
 
     class Config:
         from_attributes = True
