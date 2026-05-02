@@ -52,6 +52,13 @@ interface Stock {
   // 股利
   ex_dividend_date?: string
   cash_dividend?: number | string
+  dividend_per_share?: number | string
+  // 基本資料（補充）
+  listing_date?: string
+  capital_stock?: number
+  shares?: number
+  website?: string
+  suspension_reason?: string
 }
 
 // ─── 通用篩選條件型別 ─────────────────────────────────────────────────────────
@@ -280,6 +287,10 @@ const COLUMN_DEFS: ColumnDef[] = [
   { label: '股名',       key: 'name',                    group: '基本', defaultVisible: true  },
   { label: '市場',       key: 'market_type',             group: '基本', defaultVisible: true  },
   { label: '產業',       key: 'sector',                  group: '基本', defaultVisible: true  },
+  { label: '上市日期',   key: 'listing_date',            group: '基本', defaultVisible: false },
+  { label: '資本額',     key: 'capital_stock',           group: '基本', defaultVisible: false },
+  { label: '發行股數',   key: 'shares',                  group: '基本', defaultVisible: false },
+  { label: '公司網站',   key: 'website',                 group: '基本', defaultVisible: false },
   // 行情
   { label: '日期',       key: 'trade_date',              group: '行情', defaultVisible: true  },
   { label: '收盤',       key: 'close_price',             group: '行情', defaultVisible: true  },
@@ -319,6 +330,7 @@ const COLUMN_DEFS: ColumnDef[] = [
   // 股利
   { label: '除息日',     key: 'ex_dividend_date',        group: '股利', defaultVisible: false },
   { label: '現金股利',   key: 'cash_dividend',           group: '股利', defaultVisible: false },
+  { label: '每股股利',   key: 'dividend_per_share',      group: '股利', defaultVisible: false },
 ]
 
 const COLUMN_GROUPS = Array.from(new Set(COLUMN_DEFS.map(c => c.group)))
@@ -651,9 +663,14 @@ function App() {
       case 'debt_ratio':      return <span style={{ color: '#ccc' }}>{fmt(s.debt_ratio)}</span>
       case 'margin_long':     return <span style={{ color: s.margin_long != null && s.margin_long > 0 ? '#ffc107' : '#aaa' }}>{fmtInt(s.margin_long)}</span>
       case 'margin_short':    return <span style={{ color: s.margin_short != null && s.margin_short > 0 ? '#ff6b6b' : '#aaa' }}>{fmtInt(s.margin_short)}</span>
-      case 'ex_dividend_date':return <span style={{ color: '#51cf66', fontSize: '0.83rem' }}>{s.ex_dividend_date || '--'}</span>
-      case 'cash_dividend':   return <span style={{ color: '#51cf66' }}>{fmt(s.cash_dividend, 2)}</span>
-      default:                return '--'
+      case 'ex_dividend_date':   return <span style={{ color: '#51cf66', fontSize: '0.83rem' }}>{s.ex_dividend_date || '--'}</span>
+      case 'cash_dividend':      return <span style={{ color: '#51cf66' }}>{fmt(s.cash_dividend, 2)}</span>
+      case 'dividend_per_share': return <span style={{ color: '#51cf66' }}>{fmt(s.dividend_per_share, 2)}</span>
+      case 'listing_date':       return <span style={{ color: '#aaa', fontSize: '0.83rem' }}>{s.listing_date || '--'}</span>
+      case 'capital_stock':      return <span style={{ color: '#ccc' }}>{s.capital_stock != null ? (s.capital_stock / 1e8).toFixed(2) + ' 億' : '--'}</span>
+      case 'shares':             return <span style={{ color: '#ccc' }}>{s.shares != null ? (s.shares / 1e3).toLocaleString() + ' 千' : '--'}</span>
+      case 'website':            return s.website ? <a href={s.website} target="_blank" rel="noreferrer" style={{ color: '#6495ed', fontSize: '0.82rem' }}>官網</a> : <span style={{ color: '#555' }}>--</span>
+      default:                   return '--'
     }
   }
 
