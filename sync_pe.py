@@ -56,9 +56,10 @@ for item in r2.json():
     try:
         pe = float(item.get("PriceEarningRatio", "0")) if item.get("PriceEarningRatio", "-") not in ("-", "", "0") else None
         pb = float(item.get("PriceBookRatio", "0")) if item.get("PriceBookRatio", "-") not in ("-", "", "0") else None
+        dy = float(item.get("YieldRatio", "0")) if item.get("YieldRatio", "-") not in ("-", "", "0") else None  # 殖利率
         cur.execute(
-            "UPDATE stocks SET pe_ratio = %s, pb_ratio = %s, updated_at = %s WHERE symbol = %s",
-            (pe, pb, datetime.now(UTC), symbol)
+            "UPDATE stocks SET dividend_yield = %s, pe_ratio = %s, pb_ratio = %s, updated_at = %s WHERE symbol = %s",
+            (dy, pe, pb, datetime.now(UTC), symbol)
         )
         updated2 += 1
     except Exception as e:
@@ -67,5 +68,5 @@ for item in r2.json():
 conn.commit()
 cur.close()
 conn.close()
-print(f"✅ 上櫃本益比更新: {updated2} 筆")
+print(f"✅ 上櫃本益比／殖利率更新: {updated2} 筆")
 print("✅ 完成！")
