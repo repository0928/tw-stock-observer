@@ -170,9 +170,8 @@ const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
         conditions: [{ field: 'eps', op: 'min', value: 5 }],
       },
       {
-        key: 'high_dividend', label: '高殖利率', emoji: '💸', tooltip: '殖利率 ≥ 4%（股利資料同步中）',
+        key: 'high_dividend', label: '高殖利率', emoji: '💸', tooltip: '殖利率 ≥ 4%',
         conditions: [{ field: 'dividend_yield', op: 'min', value: 4 }],
-        disabled: true,
       },
     ],
   },
