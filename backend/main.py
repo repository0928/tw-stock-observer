@@ -449,11 +449,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         replace_existing=True,
     )
 
-    # 每週日 UTC 20:00（台灣週一 04:00 凌晨）從 Goodinfo 同步 ROE / ROA / 負債比率
-    # 財務指標為季報資料，每週同步一次即可
+    # 每週日 UTC 16:10（台灣週一 00:10 凌晨）從 Goodinfo 同步 ROE / ROA / 負債比率
+    # 1800 檔 × 3.5 秒 ≈ 8 小時，00:10 起跑可在週一 09:00 開盤前完成
     scheduler.add_job(
         sync_financial_job,
-        CronTrigger(day_of_week="sun", hour=20, minute=0, timezone="UTC"),
+        CronTrigger(day_of_week="sun", hour=16, minute=10, timezone="UTC"),
         id="sync_financial",
         replace_existing=True,
     )
