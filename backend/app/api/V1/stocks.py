@@ -330,6 +330,69 @@ async def health_check() -> dict:
 
 # ==================== 重大訊息端點 ====================
 
+# ==================== Goodinfo 財務資料同步端點 ====================
+
+@router.post("/{symbol}/sync-financial")
+async def sync_stock_financial(
+    symbol: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    從 Goodinfo 爬取單一股票的 ROE、ROA、負債比率，並更新至資料庫。
+
+    - **symbol**: 台股代碼，例如 `2330`
+
+    > ⚠️ Goodinfo 有反爬蟲機制，請勿短時間內大量呼叫。
+    """
+    try:
+        service = StockService(db)
+        stock = await service.get_stock_by_symbol(symbol)
+        if not stock:
+            raise HTTPException(status_code=404, detail=f"股票不存在: {symbol}")
+
+        result = await service.sync_financial_from_goodinfo(symbol)
+        if not result["success"]:
+            raise HTTPException(status_code=500, detail=result["message"])
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"同步財務資料失敗 {symbol}: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.post("/sync-financial-batch")
+async def sync_financial_batch(
+    symbols: Optional[List[str]] = None,
+    limit: int = Query(50, ge=1, le=200),
+    delay_seconds: float = Query(3.0, ge=1.0, le=10.0),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    批量從 Goodinfo 同步財務資料（ROE、ROA、負債比率）。
+
+    - **symbols**: 指定股票代碼清單（JSON body），不填則取資料庫前 `limit` 筆股票
+    - **limit**: 未指定 symbols 時，最多同步幾筆（預設 50）
+    - **delay_seconds**: 每次請求間隔秒數（預設 3.0，避免被封鎖）
+
+    > ⚠️ 批量爬取耗時較長，建議 limit ≤ 50，delay_seconds ≥ 3。
+    """
+    try:
+        service = StockService(db)
+        result = await service.sync_financial_batch_from_goodinfo(
+            symbols=symbols,
+            limit=limit,
+            delay_seconds=delay_seconds,
+        )
+        return {"status": "completed", **result}
+
+    except Exception as e:
+        logger.error(f"批量財務資料同步失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"批量同步失敗: {str(e)}")
+
+
 @router.get("/{symbol}/announcements", response_model=List[AnnouncementOut])
 async def get_stock_announcements(
     symbol: str,
