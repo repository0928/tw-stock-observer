@@ -1,27 +1,28 @@
 """
-Goodinfo 財務資料爬蟲
-Goodinfo Financial Data Scraper
+財務資料爬蟲（ROE / ROA / 負債比率）
 
-參考: https://minkuanchen.medium.com/python爬蟲-goodinfo的財務報表-c1147eb125f6
-
-爬取項目:
-- ROE (股東權益報酬率 %)
-- ROA (資產報酬率 %)
-- 負債比率 (%)
+來源：
+  - ROE、ROA     : Goodinfo 財務績效頁面（需模擬 JS cookie 挑戰）
+  - 負債比率      : FinMind TaiwanStockBalanceSheet API（免費，無反爬蟲）
 """
 
 import asyncio
 import logging
 import re
+import time
 from typing import Optional
-from decimal import Decimal
 
 import aiohttp
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# ─── Goodinfo 請求標頭（必須帶 Referer，否則會被擋）─────────────────────────
+# ---------------------------------------------------------------------------
+# Goodinfo
+# ---------------------------------------------------------------------------
+
+_TZ_OFFSET = -480  # 台灣 UTC+8，JS GetTimezoneOffset() 回傳 -480
+
 GOODINFO_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -29,25 +30,39 @@ GOODINFO_HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Referer": "https://goodinfo.tw/tw/index.asp",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8",
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
 }
 
-# ─── Goodinfo 財務績效頁面 URL ────────────────────────────────────────────────
-GOODINFO_BIZ_PERF_URL = "https://goodinfo.tw/tw/StockBzPerformance.asp?STOCK_ID={stock_id}"
+# ---------------------------------------------------------------------------
+# FinMind
+# ---------------------------------------------------------------------------
 
-# 想抓的指標關鍵字 → 對應欄位名稱
-METRIC_MAP = {
-    "ROE": "roe",         # 股東權益報酬率(%)
-    "ROA": "roa",         # 資產報酬率(%)
-    "負債比率": "debt_ratio",  # 負債比率(%)
-}
+FINMIND_URL = (
+    "https://api.finmindtrade.com/api/v4/data"
+    "?dataset=TaiwanStockBalanceSheet&data_id={stock_id}&start_date={start_date}&token="
+)
 
 
-def _parse_float(text: str) -> Optional[float]:
-    """將字串轉為 float，失敗回傳 None"""
+# ---------------------------------------------------------------------------
+# 工具函數
+# ---------------------------------------------------------------------------
+
+def _excel_serial() -> float:
+    """目前時間的 Excel 日期序號（Goodinfo JS 格式）"""
+    return time.time() / 86400 - _TZ_OFFSET / 1440 + 25569
+
+
+def _build_client_key() -> str:
+    """模擬 Goodinfo JS 產生的 CLIENT_KEY cookie"""
+    s = _excel_serial()
+    return f"2.3|43115.1593771044|46448.4927104377|{_TZ_OFFSET}|{s}|{s}|0"
+
+
+def _pf(text: str) -> Optional[float]:
+    """字串轉 float，失敗回 None"""
     try:
         cleaned = re.sub(r"[^\d.\-]", "", text)
         return float(cleaned) if cleaned else None
@@ -55,135 +70,181 @@ def _parse_float(text: str) -> Optional[float]:
         return None
 
 
-async def fetch_goodinfo_financial(stock_id: str) -> dict:
-    """
-    從 Goodinfo 財務績效頁面爬取最新一年的 ROE、ROA、負債比率。
+# ---------------------------------------------------------------------------
+# Goodinfo 爬取（ROE / ROA）
+# ---------------------------------------------------------------------------
 
-    Parameters
-    ----------
-    stock_id : str
-        台股代碼，例如 "2330"
-
-    Returns
-    -------
-    dict  含以下鍵值（無法取得時為 None）
-        {
-            "roe": float | None,
-            "roa": float | None,
-            "debt_ratio": float | None,
-        }
+async def _fetch_goodinfo_html(stock_id: str) -> Optional[str]:
     """
-    result = {"roe": None, "roa": None, "debt_ratio": None}
-    url = GOODINFO_BIZ_PERF_URL.format(stock_id=stock_id)
+    取得 Goodinfo 財務績效頁面的 HTML。
+    流程：首頁暖身 -> 模擬 JS 設定 CLIENT_KEY cookie -> 帶 REINIT 請求真實頁面。
+    """
+    reinit_val = str(_excel_serial())
+    reinit_url = (
+        f"https://goodinfo.tw/tw/StockBzPerformance.asp"
+        f"?STOCK_ID={stock_id}&REINIT={reinit_val}"
+    )
+    jar = aiohttp.CookieJar(unsafe=True)
 
     try:
-        # Goodinfo 有反爬蟲，需要先訪問首頁取得 cookie，再請求目標頁面
-        async with aiohttp.ClientSession(headers=GOODINFO_HEADERS) as session:
-            # Step 1: 先取得首頁，讓 cookie 生效
+        async with aiohttp.ClientSession(headers=GOODINFO_HEADERS, cookie_jar=jar) as session:
+            # Step 1: 訪問首頁取得伺服器端 session cookie
             try:
                 await session.get(
                     "https://goodinfo.tw/tw/index.asp",
                     timeout=aiohttp.ClientTimeout(total=15),
                     ssl=False,
                 )
-                await asyncio.sleep(1)  # 模擬人工瀏覽延遲
+                await asyncio.sleep(1.5)
             except Exception:
-                pass  # 首頁失敗不影響主要請求
+                pass
 
-            # Step 2: 請求財務績效頁面
+            # Step 2: 手動注入 CLIENT_KEY（模擬 JS setCookie）
+            jar.update_cookies(
+                {"CLIENT_KEY": _build_client_key()},
+                response_url=aiohttp.client_reqrep.URL("https://goodinfo.tw"),
+            )
+
+            # Step 3: 帶 REINIT 請求真實頁面
             async with session.get(
-                url,
+                reinit_url,
                 timeout=aiohttp.ClientTimeout(total=30),
                 ssl=False,
-            ) as response:
-                if response.status != 200:
-                    logger.warning(
-                        f"Goodinfo 回應狀態 {response.status}，股票代碼: {stock_id}"
-                    )
-                    return result
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Goodinfo HTTP {resp.status} ({stock_id})")
+                    return None
+                html = await resp.text(encoding="utf-8", errors="replace")
 
-                # Goodinfo 頁面編碼為 UTF-8
-                html = await response.text(encoding="utf-8", errors="replace")
+                # 若仍是 JS 挑戰頁（< 3 KB），再試一次
+                if len(html) < 3000:
+                    await asyncio.sleep(2)
+                    async with session.get(
+                        reinit_url,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                        ssl=False,
+                    ) as resp2:
+                        html = await resp2.text(encoding="utf-8", errors="replace")
 
-    except aiohttp.ClientError as e:
+                return html if len(html) > 3000 else None
+
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         logger.error(f"Goodinfo 請求失敗 {stock_id}: {e}")
-        return result
-    except asyncio.TimeoutError:
-        logger.error(f"Goodinfo 請求超時 {stock_id}")
-        return result
+        return None
 
-    # ─── HTML 解析 ────────────────────────────────────────────────────────────
+
+def _extract_roe_roa(html: str) -> tuple:
+    """
+    從 Goodinfo 頁面 HTML 解析 ROE / ROA 一般平均值。
+
+    頁面結構（摘要表）：
+      header row : [..., 'ROE', 'ROA', 'EPS', ...]
+      sub-header : ['平均(%)', '均成長', '平均(%)', '均成長', ...]
+      data row   : ['一般平均', roe_avg, roe_growth, roa_avg, roa_growth, ...]
+
+    每個指標在 header row 佔 1 格，但對應到 2 個 data 子欄（平均 + 均成長）。
+    因此 roe_data_idx = 1 + (roe_header_idx - 1) * 2
+    """
+    soup = BeautifulSoup(html, "lxml")
+    for table in soup.find_all("table"):
+        rows = table.find_all("tr")
+        for row_idx, row in enumerate(rows):
+            cells = row.find_all(["th", "td"])
+            texts = [c.get_text(strip=True) for c in cells]
+            if "ROE" not in texts or "ROA" not in texts:
+                continue
+            roe_hi = texts.index("ROE")
+            roa_hi = texts.index("ROA")
+            roe_di = 1 + (roe_hi - 1) * 2
+            roa_di = 1 + (roa_hi - 1) * 2
+            for data_row in rows[row_idx + 1: row_idx + 5]:
+                dcells = data_row.find_all(["th", "td"])
+                dtexts = [c.get_text(strip=True) for c in dcells]
+                if dtexts and dtexts[0] == "一般平均":
+                    roe = _pf(dtexts[roe_di]) if len(dtexts) > roe_di else None
+                    roa = _pf(dtexts[roa_di]) if len(dtexts) > roa_di else None
+                    return roe, roa
+    return None, None
+
+
+# ---------------------------------------------------------------------------
+# FinMind 爬取（負債比率）
+# ---------------------------------------------------------------------------
+
+async def _fetch_finmind_debt_ratio(stock_id: str) -> Optional[float]:
+    """
+    從 FinMind TaiwanStockBalanceSheet 取得最新負債比率（Liabilities_per）。
+    FinMind 免費 API，無需 token，無反爬蟲機制。
+    """
+    from datetime import date, timedelta
+    start = (date.today() - timedelta(days=548)).strftime("%Y-%m-%d")  # 約 1.5 年前
+    url = FINMIND_URL.format(stock_id=stock_id, start_date=start)
     try:
-        soup = BeautifulSoup(html, "lxml")
-        result = _extract_metrics(soup, result)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                rows = [
+                    r for r in data.get("data", [])
+                    if r.get("type") == "Liabilities_per"
+                ]
+                if not rows:
+                    return None
+                # 取最新日期
+                rows.sort(key=lambda x: x["date"], reverse=True)
+                return float(rows[0]["value"])
     except Exception as e:
-        logger.error(f"Goodinfo HTML 解析失敗 {stock_id}: {e}")
+        logger.error(f"FinMind 負債比率失敗 {stock_id}: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 公開介面
+# ---------------------------------------------------------------------------
+
+async def fetch_goodinfo_financial(stock_id: str) -> dict:
+    """
+    取得單支股票的 ROE、ROA、負債比率。
+
+    ROE / ROA  <- Goodinfo 財務績效頁
+    負債比率   <- FinMind BalanceSheet API
+
+    Returns
+    -------
+    dict { "roe": float|None, "roa": float|None, "debt_ratio": float|None }
+    """
+    result = {"roe": None, "roa": None, "debt_ratio": None}
+
+    # ROE / ROA
+    html = await _fetch_goodinfo_html(stock_id)
+    if html:
+        roe, roa = _extract_roe_roa(html)
+        result["roe"] = roe
+        result["roa"] = roa
+    else:
+        logger.warning(f"Goodinfo HTML 取得失敗 {stock_id}，ROE/ROA 設為 None")
+
+    # 負債比率（不受 Goodinfo rate-limit 影響）
+    result["debt_ratio"] = await _fetch_finmind_debt_ratio(stock_id)
 
     logger.info(
-        f"Goodinfo 財務資料 {stock_id}: "
+        f"財務資料 {stock_id}: "
         f"ROE={result['roe']}, ROA={result['roa']}, 負債比率={result['debt_ratio']}"
     )
     return result
 
 
-def _extract_metrics(soup: BeautifulSoup, result: dict) -> dict:
-    """
-    從 BeautifulSoup 解析出 ROE、ROA、負債比率。
-
-    Goodinfo 財務績效頁面的表格結構：
-    - 每一列第一個 <td> 是指標名稱
-    - 後續各欄是「最新年度 → 歷史年度」的數值
-    - 我們取第一個非空、非 '-' 的數值作為最新值
-    """
-    tables = soup.find_all("table")
-
-    for table in tables:
-        rows = table.find_all("tr")
-        for row in rows:
-            cells = row.find_all("td")
-            if not cells:
-                continue
-
-            label = cells[0].get_text(strip=True)
-
-            for keyword, field_name in METRIC_MAP.items():
-                if result[field_name] is not None:
-                    continue  # 已取得，略過
-                if keyword not in label:
-                    continue
-
-                # 取第一個有效數值（跳過標頭與空值）
-                for cell in cells[1:]:
-                    raw = cell.get_text(strip=True)
-                    if not raw or raw in {"-", "N/A", "－", "—"}:
-                        continue
-                    val = _parse_float(raw)
-                    if val is not None:
-                        result[field_name] = val
-                        break
-
-    return result
-
-
-# ─── 批量爬取（多支股票，加入延遲避免被封 IP）────────────────────────────────
-
 async def fetch_goodinfo_financial_batch(
-    stock_ids: list[str],
+    stock_ids: list,
     delay_seconds: float = 3.0,
-) -> dict[str, dict]:
+) -> dict:
     """
-    批量爬取多支股票的財務資料。
-
-    Parameters
-    ----------
-    stock_ids : list[str]
-        股票代碼清單
-    delay_seconds : float
-        每次請求之間的延遲秒數（預設 3 秒，避免被 Goodinfo 封鎖）
+    批量取得多支股票的財務資料（每筆間隔 delay_seconds 秒）。
 
     Returns
     -------
-    dict  { stock_id: { "roe": ..., "roa": ..., "debt_ratio": ... } }
+    dict { stock_id: { "roe":..., "roa":..., "debt_ratio":... } }
     """
     results = {}
     for i, stock_id in enumerate(stock_ids):
@@ -199,7 +260,9 @@ async def fetch_goodinfo_financial_batch(
     return results
 
 
-# ─── 快速測試 ─────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# 快速測試
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import sys
