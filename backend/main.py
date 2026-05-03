@@ -286,6 +286,62 @@ async def sync_pe_job():
         logger.error(f"❌ 同步上櫃本益比失敗: {e}")
 
 
+async def sync_financial_job():
+    """每週自動從 Goodinfo 同步 ROE、ROA、負債比率"""
+    logger.info("⏰ 開始自動同步 Goodinfo 財務資料（ROE / ROA / 負債比率）...")
+    try:
+        from app.services.goodinfo_scraper import fetch_goodinfo_financial
+        from app.models import Stock
+        from decimal import Decimal
+        import asyncio
+
+        async for db in get_db():
+            # 取得所有啟用中的股票代碼
+            stmt = select(Stock.symbol).where(Stock.is_active == True).order_by(Stock.symbol)
+            result = await db.execute(stmt)
+            symbols = [row[0] for row in result.fetchall()]
+            logger.info(f"共 {len(symbols)} 支股票待同步財務資料")
+
+            success = 0
+            failed = 0
+            for i, symbol in enumerate(symbols):
+                try:
+                    if i > 0:
+                        await asyncio.sleep(3.5)  # 每筆間隔 3.5 秒，避免被 Goodinfo 封鎖
+
+                    data = await fetch_goodinfo_financial(symbol)
+
+                    stock_stmt = select(Stock).where(Stock.symbol == symbol)
+                    stock_result = await db.execute(stock_stmt)
+                    stock = stock_result.scalar_one_or_none()
+
+                    if stock and any(v is not None for v in data.values()):
+                        if data.get("roe") is not None:
+                            stock.roe = Decimal(str(data["roe"]))
+                        if data.get("roa") is not None:
+                            stock.roa = Decimal(str(data["roa"]))
+                        if data.get("debt_ratio") is not None:
+                            stock.debt_ratio = Decimal(str(data["debt_ratio"]))
+                        stock.financial_data_updated_at = datetime.now(timezone.utc)
+                        success += 1
+
+                    # 每 50 筆 commit 一次，減少記憶體壓力
+                    if (i + 1) % 50 == 0:
+                        await db.commit()
+                        logger.info(f"  進度: {i+1}/{len(symbols)}，已成功 {success} 筆")
+
+                except Exception as e:
+                    logger.error(f"同步 {symbol} 財務資料失敗: {e}")
+                    failed += 1
+
+            await db.commit()
+            logger.info(f"✅ Goodinfo 財務資料同步完成: 成功 {success}，失敗 {failed}")
+            break
+
+    except Exception as e:
+        logger.error(f"❌ 自動同步 Goodinfo 財務資料失敗: {e}")
+
+
 async def sync_eps_job():
     """每日自動同步 EPS、營收、淨利（上市 + 上櫃）"""
     logger.info("⏰ 開始自動同步 EPS / 營收 / 淨利...")
@@ -386,11 +442,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     )
 
     # 每天 UTC 09:30（台灣 17:30）同步 EPS、營收、淨利
-    # 財報資料每季更新，每日同步確保不遺漏最新資料
     scheduler.add_job(
         sync_eps_job,
         CronTrigger(hour=9, minute=30, timezone="UTC"),
         id="sync_eps",
+        replace_existing=True,
+    )
+
+    # 每週日 UTC 20:00（台灣週一 04:00 凌晨）從 Goodinfo 同步 ROE / ROA / 負債比率
+    # 財務指標為季報資料，每週同步一次即可
+    scheduler.add_job(
+        sync_financial_job,
+        CronTrigger(day_of_week="sun", hour=20, minute=0, timezone="UTC"),
+        id="sync_financial",
         replace_existing=True,
     )
 

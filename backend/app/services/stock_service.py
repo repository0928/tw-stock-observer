@@ -15,6 +15,7 @@ from sqlalchemy import select, and_, desc
 from app.models import Stock, KlineDaily
 from app.schemas import StockResponse, StockQuoteResponse, KlineDailyResponse
 from app.config import settings
+from app.services.goodinfo_scraper import fetch_goodinfo_financial, fetch_goodinfo_financial_batch
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +407,152 @@ class StockService:
         except Exception as e:
             logger.error(f"計算績效失敗 {symbol}: {e}")
             return None
+
+
+    # ==================== Goodinfo 財務資料同步 ====================
+
+    async def sync_financial_from_goodinfo(self, symbol: str) -> Dict:
+        """
+        從 Goodinfo 爬取單一股票的 ROE、ROA、負債比率，並更新資料庫。
+
+        Parameters
+        ----------
+        symbol : str  台股代碼，例如 "2330"
+
+        Returns
+        -------
+        dict  含 success、symbol、data、message 欄位
+        """
+        try:
+            stock = await self.get_stock_by_symbol(symbol)
+            if not stock:
+                return {
+                    "success": False,
+                    "symbol": symbol,
+                    "message": f"股票不存在: {symbol}",
+                }
+
+            financial = await fetch_goodinfo_financial(symbol)
+
+            updated_fields = {}
+            if financial.get("roe") is not None:
+                stock.roe = Decimal(str(financial["roe"]))
+                updated_fields["roe"] = float(financial["roe"])
+            if financial.get("roa") is not None:
+                stock.roa = Decimal(str(financial["roa"]))
+                updated_fields["roa"] = float(financial["roa"])
+            if financial.get("debt_ratio") is not None:
+                stock.debt_ratio = Decimal(str(financial["debt_ratio"]))
+                updated_fields["debt_ratio"] = float(financial["debt_ratio"])
+
+            stock.financial_data_updated_at = datetime.now(timezone.utc)
+            await self.db.commit()
+
+            logger.info(f"財務資料更新完成 {symbol}: {updated_fields}")
+            return {
+                "success": True,
+                "symbol": symbol,
+                "data": updated_fields,
+                "message": "財務資料更新成功",
+            }
+
+        except Exception as e:
+            logger.error(f"同步 Goodinfo 財務資料失敗 {symbol}: {e}")
+            await self.db.rollback()
+            return {
+                "success": False,
+                "symbol": symbol,
+                "message": f"同步失敗: {str(e)}",
+            }
+
+    async def sync_financial_batch_from_goodinfo(
+        self,
+        symbols: Optional[List[str]] = None,
+        limit: int = 50,
+        delay_seconds: float = 3.0,
+    ) -> Dict:
+        """
+        批量從 Goodinfo 同步財務資料（ROE、ROA、負債比率）。
+
+        Parameters
+        ----------
+        symbols : list[str] | None
+            指定股票代碼清單；若為 None 則取資料庫中全部已啟用的股票（最多 limit 筆）
+        limit : int
+            未指定 symbols 時，最多同步幾筆（預設 50）
+        delay_seconds : float
+            每次請求之間的延遲秒數（預設 3 秒，避免被 Goodinfo 封鎖）
+
+        Returns
+        -------
+        dict  含 total、success_count、failed、results 欄位
+        """
+        try:
+            if symbols is None:
+                stmt = (
+                    select(Stock.symbol)
+                    .where(Stock.is_active == True)
+                    .order_by(Stock.symbol)
+                    .limit(limit)
+                )
+                result = await self.db.execute(stmt)
+                symbols = [row[0] for row in result.fetchall()]
+
+            if not symbols:
+                return {"total": 0, "success_count": 0, "failed": [], "results": {}}
+
+            raw_data = await fetch_goodinfo_financial_batch(symbols, delay_seconds)
+
+            success_count = 0
+            failed = []
+            results = {}
+
+            for symbol, financial in raw_data.items():
+                try:
+                    stock = await self.get_stock_by_symbol(symbol)
+                    if not stock:
+                        failed.append({"symbol": symbol, "reason": "股票不存在"})
+                        continue
+
+                    updated_fields = {}
+                    if financial.get("roe") is not None:
+                        stock.roe = Decimal(str(financial["roe"]))
+                        updated_fields["roe"] = float(financial["roe"])
+                    if financial.get("roa") is not None:
+                        stock.roa = Decimal(str(financial["roa"]))
+                        updated_fields["roa"] = float(financial["roa"])
+                    if financial.get("debt_ratio") is not None:
+                        stock.debt_ratio = Decimal(str(financial["debt_ratio"]))
+                        updated_fields["debt_ratio"] = float(financial["debt_ratio"])
+
+                    stock.financial_data_updated_at = datetime.now(timezone.utc)
+                    success_count += 1
+                    results[symbol] = updated_fields
+
+                except Exception as e:
+                    logger.error(f"批量更新 {symbol} 失敗: {e}")
+                    failed.append({"symbol": symbol, "reason": str(e)})
+
+            await self.db.commit()
+            logger.info(
+                f"批量財務資料同步完成: 成功 {success_count}/{len(symbols)}, 失敗 {len(failed)}"
+            )
+            return {
+                "total": len(symbols),
+                "success_count": success_count,
+                "failed": failed,
+                "results": results,
+            }
+
+        except Exception as e:
+            logger.error(f"批量財務資料同步失敗: {e}")
+            await self.db.rollback()
+            return {
+                "total": 0,
+                "success_count": 0,
+                "failed": [],
+                "message": f"批量同步失敗: {str(e)}",
+            }
 
 
 async def get_stock_service(db: AsyncSession) -> StockService:
