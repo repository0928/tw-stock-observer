@@ -365,20 +365,46 @@ async def sync_stock_financial(
 
 @router.post("/sync-financial-batch")
 async def sync_financial_batch(
+    background_tasks: BackgroundTasks,
     symbols: Optional[List[str]] = None,
-    limit: int = Query(50, ge=1, le=200),
-    delay_seconds: float = Query(3.0, ge=1.0, le=10.0),
+    limit: int = Query(50, ge=1, le=2000),
+    delay_seconds: float = Query(3.5, ge=1.0, le=10.0),
+    background: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
     批量從 Goodinfo 同步財務資料（ROE、ROA、負債比率）。
 
     - **symbols**: 指定股票代碼清單（JSON body），不填則取資料庫前 `limit` 筆股票
-    - **limit**: 未指定 symbols 時，最多同步幾筆（預設 50）
-    - **delay_seconds**: 每次請求間隔秒數（預設 3.0，避免被封鎖）
+    - **limit**: 最多同步幾筆（預設 50，全量請帶 2000）
+    - **delay_seconds**: 每次請求間隔秒數（預設 3.5，避免被封鎖）
+    - **background**: true = 立即回傳，背景非同步執行（適合全量同步）
 
-    > ⚠️ 批量爬取耗時較長，建議 limit ≤ 50，delay_seconds ≥ 3。
+    > 全量 1800 檔 × 3.5 秒 ≈ 8 小時，建議 background=true。
     """
+    from app.database import get_db as _get_db
+    from app.services.stock_service import StockService as _StockService
+
+    async def _run_full_sync(syms, lim, delay):
+        """背景執行：自行建立獨立 db session"""
+        try:
+            async for _db in _get_db():
+                svc = _StockService(_db)
+                result = await svc.sync_financial_batch_from_goodinfo(
+                    symbols=syms, limit=lim, delay_seconds=delay
+                )
+                logger.info(f"背景財務同步完成: {result}")
+                break
+        except Exception as e:
+            logger.error(f"背景財務同步失敗: {e}")
+
+    if background:
+        background_tasks.add_task(_run_full_sync, symbols, limit, delay_seconds)
+        return {
+            "status": "started",
+            "message": f"背景同步已啟動，最多同步 {limit} 筆，每筆間隔 {delay_seconds} 秒",
+        }
+
     try:
         service = StockService(db)
         result = await service.sync_financial_batch_from_goodinfo(
