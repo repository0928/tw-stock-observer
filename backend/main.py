@@ -537,7 +537,3 @@ if __name__ == "__main__":
         reload=settings.DEBUG,
         log_level="info",
     )
-        port=settings.API_PORT,
-        reload=False,
-        log_level="info",
-    )
