@@ -6,12 +6,14 @@
 - ROE = 全年稅後淨利 / 年末股東權益 * 100
 - ROA = 全年稅後淨利 / 年末總資產 * 100
 - 負債比率 = Liabilities_per（FinMind 直接提供）
+
+修正：兩個 FinMind 呼叫改為「循序」而非 asyncio.gather() 並發，
+      並加入 retry + 指數退避，避免 Zeabur 環境觸發 FinMind 速率限制。
 """
 
 import asyncio
 import logging
 from datetime import date, timedelta
-from typing import Optional
 
 import aiohttp
 
@@ -19,20 +21,61 @@ logger = logging.getLogger(__name__)
 
 FINMIND_BASE = "https://api.finmindtrade.com/api/v4/data"
 
+# 每次 FinMind 兩個 dataset 呼叫之間的間隔（秒）
+_INTER_CALL_DELAY = 1.0
+# 最多重試次數
+_MAX_RETRIES = 3
+
 
 async def _finmind_get(dataset: str, stock_id: str, start_date: str) -> list:
-    """呼叫 FinMind API，回傳 data 陣列"""
-    url = f"{FINMIND_BASE}?dataset={dataset}&data_id={stock_id}&start_date={start_date}&token="
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                if resp.status != 200:
-                    return []
-                d = await resp.json()
-                return d.get("data", [])
-    except Exception as e:
-        logger.error(f"FinMind {dataset} {stock_id} 失敗: {e}")
-        return []
+    """
+    呼叫 FinMind API，回傳 data 陣列。
+    自動重試：遇到 429 或空回應時，指數退避後重試，最多 _MAX_RETRIES 次。
+    """
+    url = (
+        f"{FINMIND_BASE}"
+        f"?dataset={dataset}&data_id={stock_id}&start_date={start_date}&token="
+    )
+    for attempt in range(_MAX_RETRIES):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status == 429:
+                        wait = 2 ** attempt * 5  # 5 / 10 / 20 秒
+                        logger.warning(
+                            f"FinMind 速率限制 {dataset} {stock_id}，"
+                            f"{wait}s 後重試 (attempt {attempt+1})"
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+                    if resp.status != 200:
+                        logger.warning(
+                            f"FinMind {dataset} {stock_id} HTTP {resp.status}"
+                        )
+                        return []
+                    d = await resp.json()
+                    data = d.get("data", [])
+                    # FinMind 速率限制時有時回 200 但 data=[] 且 msg 含 "limit"
+                    msg = d.get("msg", "")
+                    if not data and "limit" in msg.lower():
+                        wait = 2 ** attempt * 5
+                        logger.warning(
+                            f"FinMind limit msg '{msg}' {dataset} {stock_id}，"
+                            f"{wait}s 後重試 (attempt {attempt+1})"
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+                    return data
+        except asyncio.TimeoutError:
+            logger.warning(f"FinMind timeout {dataset} {stock_id} (attempt {attempt+1})")
+            await asyncio.sleep(2 ** attempt * 3)
+        except Exception as e:
+            logger.error(f"FinMind {dataset} {stock_id} 失敗: {e}")
+            return []
+    logger.error(f"FinMind {dataset} {stock_id} 重試 {_MAX_RETRIES} 次後放棄")
+    return []
 
 
 async def fetch_goodinfo_financial(stock_id: str) -> dict:
@@ -43,6 +86,9 @@ async def fetch_goodinfo_financial(stock_id: str) -> dict:
       - TaiwanStockBalanceSheet: TotalAssets, Equity, Liabilities_per
       - TaiwanStockFinancialStatements: IncomeAfterTaxes（各季）
 
+    ⚠️  兩個 dataset 改為循序呼叫（非並發），並在中間加 _INTER_CALL_DELAY 秒，
+        避免批量同步時從同一 IP 觸發 FinMind 速率限制。
+
     Returns
     -------
     dict { "roe": float|None, "roa": float|None, "debt_ratio": float|None }
@@ -52,11 +98,10 @@ async def fetch_goodinfo_financial(stock_id: str) -> dict:
     # 取近 1.5 年資料，確保能拿到最新完整年度
     start = (date.today() - timedelta(days=548)).strftime("%Y-%m-%d")
 
-    # 並發取兩個 dataset
-    bs_data, fs_data = await asyncio.gather(
-        _finmind_get("TaiwanStockBalanceSheet", stock_id, start),
-        _finmind_get("TaiwanStockFinancialStatements", stock_id, start),
-    )
+    # ── 循序呼叫兩個 dataset，中間間隔 _INTER_CALL_DELAY 秒 ──────────────
+    bs_data = await _finmind_get("TaiwanStockBalanceSheet", stock_id, start)
+    await asyncio.sleep(_INTER_CALL_DELAY)
+    fs_data = await _finmind_get("TaiwanStockFinancialStatements", stock_id, start)
 
     # ── 負債比率（直接由 FinMind 提供）─────────────────────────────────
     liab_rows = [r for r in bs_data if r["type"] == "Liabilities_per"]
@@ -68,7 +113,6 @@ async def fetch_goodinfo_financial(stock_id: str) -> dict:
             pass
 
     # ── 最新完整年度的年末資產與權益 ───────────────────────────────────
-    # 找最新有 TotalAssets 的年度（月份為 12-31 優先，否則取最新季末）
     asset_rows = [r for r in bs_data if r["type"] == "TotalAssets"]
     equity_rows = [r for r in bs_data if r["type"] == "Equity"]
 
@@ -79,8 +123,8 @@ async def fetch_goodinfo_financial(stock_id: str) -> dict:
     asset_rows.sort(key=lambda x: x["date"], reverse=True)
     equity_rows.sort(key=lambda x: x["date"], reverse=True)
 
-    latest_date = asset_rows[0]["date"]          # e.g. "2025-12-31"
-    latest_year = latest_date[:4]                # "2025"
+    latest_date = asset_rows[0]["date"]   # e.g. "2025-12-31"
+    latest_year = latest_date[:4]         # "2025"
 
     total_assets = float(asset_rows[0]["value"])
     equity = float(equity_rows[0]["value"])
@@ -92,7 +136,9 @@ async def fetch_goodinfo_financial(stock_id: str) -> dict:
     ]
 
     if not ni_rows:
-        logger.warning(f"FinMind FinancialStatements 無 {latest_year} 淨利資料 {stock_id}")
+        logger.warning(
+            f"FinMind FinancialStatements 無 {latest_year} 淨利資料 {stock_id}"
+        )
         return result
 
     net_income = sum(float(r["value"]) for r in ni_rows)
@@ -112,12 +158,18 @@ async def fetch_goodinfo_financial(stock_id: str) -> dict:
 
 async def fetch_goodinfo_financial_batch(
     stock_ids: list,
-    delay_seconds: float = 1.0,
+    delay_seconds: float = 2.0,
 ) -> dict:
     """
     批量取得多支股票的財務資料。
 
-    FinMind 不需要像 Goodinfo 一樣長時間等待，delay 可縮短至 1 秒。
+    每支股票的兩個 FinMind 呼叫已在 fetch_goodinfo_financial 內循序執行，
+    並且中間已有 _INTER_CALL_DELAY（1 秒）間隔。
+    此處 delay_seconds 為「股票與股票之間」的額外等待（預設 2 秒）。
+
+    總速率 ≈ 1 股票 / (2×_INTER_CALL_DELAY + delay_seconds)
+           = 1 股票 / (2×1 + 2) = 1 股票 / 4 秒
+           ≈ 15 支/分鐘，共 2 × 15 = 30 個 API 呼叫/分鐘 → FinMind 安全範圍。
 
     Returns
     -------

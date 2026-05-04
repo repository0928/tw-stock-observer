@@ -307,7 +307,7 @@ async def sync_financial_job():
             for i, symbol in enumerate(symbols):
                 try:
                     if i > 0:
-                        await asyncio.sleep(1.0)  # FinMind API，間隔 1 秒即可
+                        await asyncio.sleep(2.0)  # FinMind API：每股票間隔 2 秒（加上內部 1 秒 = ~4 秒/股票，約 30 req/min，在免費額度內）
 
                     data = await fetch_goodinfo_financial(symbol)
 
@@ -533,7 +533,4 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host=settings.API_HOST,
-        port=settings.API_PORT,
-        reload=settings.DEBUG,
-        log_level="info",
-    )
+        port=s
