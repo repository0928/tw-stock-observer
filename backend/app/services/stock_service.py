@@ -475,26 +475,12 @@ class StockService:
         """
         批量從 FinMind 同步財務資料（ROE、ROA、負債比率）。
 
-        ⚠️  改為「逐支股票抓取 → 立即寫入 DB → 每 50 支 commit 一次」。
-            舊版先把全部資料抓完再一次 commit，會導致 DB session 因長時間
-            閒置而逾時（2000 支 × 5 秒 ≈ 2.7 小時），造成資料全部寫不進去。
-
-        Parameters
-        ----------
-        symbols : list[str] | None
-            指定股票代碼清單；若為 None 則取資料庫中全部已啟用的股票（最多 limit 筆）
-        limit : int
-            未指定 symbols 時，最多同步幾筆（預設 50）
-        delay_seconds : float
-            每次請求之間的延遲秒數（預設 3 秒）
-
-        Returns
-        -------
-        dict  含 total、success_count、failed、results 欄位
+        改為「逐支股票抓取 → 立即寫入 DB → 每 50 支 commit 一次」，
+        避免 DB session 長時間閒置逾時。
         """
         from app.services.goodinfo_scraper import fetch_goodinfo_financial
 
-        COMMIT_EVERY = 50  # 每 50 支 commit 一次，保持 DB session 活躍
+        COMMIT_EVERY = 50
 
         try:
             if symbols is None:
@@ -515,7 +501,6 @@ class StockService:
             results = {}
 
             for i, symbol in enumerate(symbols):
-                # 每支股票之間的延遲（第一支不等）
                 if i > 0:
                     await asyncio.sleep(delay_seconds)
 
@@ -542,18 +527,14 @@ class StockService:
                     success_count += 1
                     results[symbol] = updated_fields
 
-                    # 每 COMMIT_EVERY 支 commit 一次，避免 session 閒置逾時
                     if (i + 1) % COMMIT_EVERY == 0:
                         await self.db.commit()
-                        logger.info(
-                            f"[{i+1}/{len(symbols)}] 批量財務同步進度，已 commit"
-                        )
+                        logger.info(f"[{i+1}/{len(symbols)}] 批量財務同步進度，已 commit")
 
                 except Exception as e:
                     logger.error(f"批量更新 {symbol} 失敗: {e}")
                     failed.append({"symbol": symbol, "reason": str(e)})
 
-            # 最後 commit 尾數
             await self.db.commit()
             logger.info(
                 f"批量財務資料同步完成: 成功 {success_count}/{len(symbols)}, 失敗 {len(failed)}"
@@ -579,7 +560,3 @@ class StockService:
 async def get_stock_service(db: AsyncSession) -> StockService:
     """取得股票服務實例"""
     return StockService(db)
-
-
-if __name__ == "__main__":
-    print("✅ 股票服務模組已載入")
