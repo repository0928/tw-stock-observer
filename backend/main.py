@@ -307,7 +307,7 @@ async def sync_financial_job():
             for i, symbol in enumerate(symbols):
                 try:
                     if i > 0:
-                        await asyncio.sleep(3.5)  # 每筆間隔 3.5 秒，避免被 Goodinfo 封鎖
+                        await asyncio.sleep(1.0)  # FinMind API，間隔 1 秒即可
 
                     data = await fetch_goodinfo_financial(symbol)
 
