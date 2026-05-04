@@ -297,7 +297,7 @@ async def sync_financial_job():
 
         async for db in get_db():
             # 取得所有啟用中的股票代碼
-            stmt = select(Stock.symbol).where(Stock.is_active == True).order_by(Stock.symbol)
+            stmt = select(Stock.symbol).where(Stock.is_active == True, Stock.is_etf == False).order_by(Stock.symbol)
             result = await db.execute(stmt)
             symbols = [row[0] for row in result.fetchall()]
             logger.info(f"共 {len(symbols)} 支股票待同步財務資料")

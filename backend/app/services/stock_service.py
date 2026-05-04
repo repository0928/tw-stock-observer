@@ -486,7 +486,10 @@ class StockService:
             if symbols is None:
                 stmt = (
                     select(Stock.symbol)
-                    .where(Stock.is_active == True)
+                    .where(
+                        Stock.is_active == True,
+                        Stock.is_etf == False,   # 跳過 ETF（0xxx），沒有財報資料
+                    )
                     .order_by(Stock.symbol)
                     .limit(limit)
                 )
