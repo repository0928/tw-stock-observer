@@ -368,7 +368,7 @@ async def sync_financial_batch(
     background_tasks: BackgroundTasks,
     symbols: Optional[List[str]] = None,
     limit: int = Query(50, ge=1, le=2000),
-    delay_seconds: float = Query(3.5, ge=1.0, le=10.0),
+    delay_seconds: float = Query(3.5, ge=1.0, le=30.0),
     background: bool = Query(False),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
