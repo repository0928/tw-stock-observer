@@ -19,7 +19,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.config import settings
 from app.database import engine, init_db, get_db
-from app.api.V1 import stocks
+from app.api.v1 import stocks
 from app.models import Stock
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
