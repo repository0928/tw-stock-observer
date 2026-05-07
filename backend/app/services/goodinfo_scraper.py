@@ -125,9 +125,11 @@ async def fetch_goodinfo_financial(stock_id: str) -> dict:
     equity = float(equity_rows[0]["value"])
 
     # 全年稅後淨利
+    # 一般股: IncomeAfterTaxes；金融股(銀行/保險/金控): IncomeAfterTax（無 s）
     ni_rows = [
         r for r in fs_data
-        if r["type"] == "IncomeAfterTaxes" and r["date"].startswith(latest_year)
+        if r["type"] in ("IncomeAfterTaxes", "IncomeAfterTax")
+        and r["date"].startswith(latest_year)
     ]
     if not ni_rows:
         return result
