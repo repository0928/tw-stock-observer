@@ -111,7 +111,7 @@ type QuickFilterKey =
   | 'limit_up' | 'near_limit' | 'rising' | 'falling' | 'limit_down'
   | 'low_pe' | 'low_pb' | 'high_eps' | 'high_dividend'
   | 'profitable' | 'losing' | 'revenue_growth'
-  | 'high_gross_margin' | 'high_roe' | 'low_debt'
+  | 'high_gross_margin' | 'high_roe' | 'high_roa' | 'low_debt'
   | 'etf' | 'no_etf' | 'close_at_high' | 'high_turnover'
   | 'foreign_buy' | 'trust_buy' | 'high_margin_long'
   | 'is_attention' | 'is_disposed'
@@ -190,14 +190,16 @@ const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
         conditions: [{ field: 'gross_margin', op: 'min', value: 30 }],
       },
       {
-        key: 'high_roe', label: '高 ROE', emoji: '📐', tooltip: 'ROE ≥ 15%（資料同步中）',
+        key: 'high_roe', label: '高 ROE', emoji: '📐', tooltip: 'ROE ≥ 15%',
         conditions: [{ field: 'roe', op: 'min', value: 15 }],
-        disabled: true,
       },
       {
-        key: 'low_debt', label: '低負債', emoji: '🛡️', tooltip: '負債比率 ≤ 40%（資料同步中）',
+        key: 'high_roa', label: '高 ROA', emoji: '💎', tooltip: 'ROA ≥ 8%',
+        conditions: [{ field: 'roa', op: 'min', value: 8 }],
+      },
+      {
+        key: 'low_debt', label: '低負債', emoji: '🛡️', tooltip: '負債比率 ≤ 40%',
         conditions: [{ field: 'debt_ratio', op: 'max', value: 40 }],
-        disabled: true,
       },
       {
         key: 'profitable', label: '獲利股', emoji: '✅', tooltip: '淨利 > 0',
@@ -354,6 +356,16 @@ function saveVisibleColumns(cols: Set<string>) {
   } catch {}
 }
 
+// ─── 大盤指數型別 ──────────────────────────────────────────────────────────────
+
+interface MarketIndex {
+  name: string
+  code: string
+  price: number | null
+  change: number | null
+  change_pct: number | null
+}
+
 // ─── 常數 ────────────────────────────────────────────────────────────────────
 
 const API_URL = (import.meta.env.VITE_API_URL as string) || 'http://localhost:8000/api'
@@ -379,6 +391,28 @@ function App() {
   const [showColPanel, setShowColPanel] = useState(false)
   const colPanelRef = useRef<HTMLDivElement>(null)
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ── 大盤指數 ──────────────────────────────────────────────────────────────
+  const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([])
+  const [indicesLoading, setIndicesLoading] = useState(true)
+
+  useEffect(() => {
+    const fetchIndices = async () => {
+      setIndicesLoading(true)
+      try {
+        const res = await fetch(`${API_URL}/v1/market/indices`)
+        if (res.ok) {
+          const data = await res.json()
+          setMarketIndices(data.indices || [])
+        }
+      } catch {}
+      setIndicesLoading(false)
+    }
+    fetchIndices()
+    // 每 60 秒刷新一次
+    const timer = setInterval(fetchIndices, 60_000)
+    return () => clearInterval(timer)
+  }, [])
 
   // ── 重大訊息 modal ────────────────────────────────────────────────────────
   interface Announcement { id: number; announce_date: string; subject: string; content: string; source: string }
@@ -736,6 +770,55 @@ function App() {
       </header>
 
       <main className="app-main">
+
+        {/* ── 大盤指數顯示專區 ── */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(4, 1fr)',
+          gap: '0.75rem',
+          marginBottom: '1.25rem',
+        }}>
+          {indicesLoading
+            ? [1,2,3,4].map(i => (
+                <div key={i} style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: '12px', padding: '16px 20px',
+                  display: 'flex', flexDirection: 'column', gap: '6px',
+                  minHeight: '90px', animation: 'pulse 1.5s infinite',
+                }} />
+              ))
+            : marketIndices.map((idx) => {
+                const isUp = (idx.change ?? 0) > 0
+                const isDown = (idx.change ?? 0) < 0
+                const color = isUp ? '#4ade80' : isDown ? '#f87171' : '#9ca3af'
+                const bgColor = isUp
+                  ? 'rgba(74,222,128,0.07)'
+                  : isDown ? 'rgba(248,113,113,0.07)' : 'rgba(255,255,255,0.04)'
+                const sign = isUp ? '+' : ''
+                return (
+                  <div key={idx.code} style={{
+                    background: bgColor,
+                    border: `1px solid ${isUp ? 'rgba(74,222,128,0.2)' : isDown ? 'rgba(248,113,113,0.2)' : 'rgba(255,255,255,0.08)'}`,
+                    borderRadius: '12px', padding: '16px 20px',
+                    display: 'flex', flexDirection: 'column', gap: '4px',
+                  }}>
+                    <div style={{ fontSize: '0.78rem', color: '#9ca3af', fontWeight: 500, letterSpacing: '0.02em' }}>
+                      {idx.name}
+                    </div>
+                    <div style={{ fontSize: '1.65rem', fontWeight: 700, color: '#fff', letterSpacing: '-0.02em', lineHeight: 1.1 }}>
+                      {idx.price != null ? idx.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '---'}
+                    </div>
+                    <div style={{ fontSize: '0.88rem', color, fontWeight: 600 }}>
+                      {idx.change != null
+                        ? `${sign}${idx.change.toFixed(2)}　${sign}${idx.change_pct?.toFixed(2)}%`
+                        : '---'}
+                    </div>
+                  </div>
+                )
+              })
+          }
+        </div>
 
         {/* ── 搜尋列 + 市場 / 產業篩選 + 欄位開關 ── */}
         <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap' }}>

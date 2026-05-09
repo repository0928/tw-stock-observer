@@ -19,7 +19,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.config import settings
 from app.database import engine, init_db, get_db
-from app.api.v1 import stocks
+from app.api.v1 import stocks, market
 from app.models import Stock
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -490,6 +490,7 @@ app.add_middleware(
 )
 
 app.include_router(stocks.router, prefix="/api/v1", tags=["stocks"])
+app.include_router(market.router, prefix="/api/v1", tags=["market"])
 
 
 def custom_openapi():
