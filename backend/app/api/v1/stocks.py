@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, distinct
+from sqlalchemy import select, func, distinct, asc, desc, nullslast
 from app.database import get_db
 from app.schemas import StockResponse, StockQuoteResponse, KlineDailyResponse, AnnouncementOut
 from app.models import Stock, StockAnnouncement
@@ -98,6 +98,10 @@ async def list_sectors(db: AsyncSession = Depends(get_db)) -> dict:
         raise HTTPException(status_code=500, detail="伺服器錯誤")
 
 
+# 允許伺服器端排序的欄位白名單
+SORTABLE_FIELDS = NUMERIC_FILTER_FIELDS | {"symbol", "name", "sector", "market_type", "updated_at"}
+
+
 @router.get("")
 async def list_stocks(
     request: Request,
@@ -105,6 +109,8 @@ async def list_stocks(
     limit: int = Query(100, ge=1, le=500),
     market_type: Optional[str] = None,
     sector: Optional[str] = None,
+    sort_by: Optional[str] = Query(None, description="排序欄位"),
+    sort_order: Optional[str] = Query("desc", pattern="^(asc|desc)$"),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """獲取股票列表
@@ -162,10 +168,18 @@ async def list_stocks(
         count_result = await db.execute(count_stmt)
         total_count = count_result.scalar()
 
+        # ── 排序 ──────────────────────────────────────────────────
+        if sort_by and sort_by in SORTABLE_FIELDS and hasattr(Stock, sort_by):
+            col = getattr(Stock, sort_by)
+            # NULL 值永遠排在最後
+            order_clause = nullslast(desc(col)) if sort_order == "desc" else nullslast(asc(col))
+        else:
+            order_clause = asc(Stock.symbol)
+
         stmt = (
             select(Stock)
             .where(*conditions)
-            .order_by(Stock.symbol)
+            .order_by(order_clause)
             .offset(skip)
             .limit(limit)
         )

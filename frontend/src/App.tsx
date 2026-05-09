@@ -482,6 +482,8 @@ function App() {
     market?: string,
     sector?: string,
     conditions: FilterCondition[] = [],
+    sby?: string,
+    sdir?: 'asc' | 'desc',
   ) => {
     setLoading(true)
     setError(null)
@@ -491,9 +493,10 @@ function App() {
         url = `${API_URL}/v1/stocks/search/${encodeURIComponent(keyword)}`
       } else {
         const skip = (p - 1) * PAGE_SIZE
-        const base = `${API_URL}/v1/stocks?skip=${skip}&limit=${PAGE_SIZE}`
+        let base = `${API_URL}/v1/stocks?skip=${skip}&limit=${PAGE_SIZE}`
           + (market ? `&market_type=${encodeURIComponent(market)}` : '')
           + (sector ? `&sector=${encodeURIComponent(sector)}` : '')
+        if (sby) base += `&sort_by=${sby}&sort_order=${sdir ?? 'desc'}`
         url = buildUrl(base, conditions)
       }
       const res = await fetch(url)
@@ -545,7 +548,7 @@ function App() {
 
   const handlePage = (newPage: number) => {
     setPage(newPage)
-    fetchStocks(newPage, '', marketFilter, sectorFilter, getActiveConditions(activeFilters))
+    fetchStocks(newPage, '', marketFilter, sectorFilter, getActiveConditions(activeFilters), sortKey || undefined, sortDir)
     window.scrollTo(0, 0)
   }
 
@@ -583,8 +586,12 @@ function App() {
   }
 
   const handleSort = (key: string) => {
-    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
-    else { setSortKey(key); setSortDir('desc') }
+    const newDir = sortKey === key ? (sortDir === 'asc' ? 'desc' : 'asc') : 'desc'
+    const newKey = key
+    setSortKey(newKey)
+    setSortDir(newDir)
+    setPage(1)
+    fetchStocks(1, searchTerm, marketFilter, sectorFilter, getActiveConditions(activeFilters), newKey, newDir)
   }
 
   // ── 格式化工具 ────────────────────────────────────────────────────────────
@@ -708,20 +715,7 @@ function App() {
     }
   }
 
-  const sortedStocks = [...stocks].sort((a, b) => {
-    if (!sortKey) return 0
-    const va = a[sortKey as keyof Stock]
-    const vb = b[sortKey as keyof Stock]
-    if (va == null && vb == null) return 0
-    if (va == null) return 1
-    if (vb == null) return -1
-    const na = typeof va === 'string' ? parseFloat(va) : Number(va)
-    const nb = typeof vb === 'string' ? parseFloat(vb) : Number(vb)
-    if (!isNaN(na) && !isNaN(nb)) return sortDir === 'asc' ? na - nb : nb - na
-    return sortDir === 'asc'
-      ? String(va).localeCompare(String(vb))
-      : String(vb).localeCompare(String(va))
-  })
+  const sortedStocks = stocks  // 排序已由後端處理
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
   const activeFilterDefs = ALL_FILTERS.filter(f => activeFilters.has(f.key))
@@ -1006,11 +1000,6 @@ function App() {
               </table>
             </div>
 
-            {sortKey && sortedStocks.length > 0 && (
-              <div style={{ textAlign: 'center', marginTop: '0.5rem', color: '#666', fontSize: '0.8rem' }}>
-                ℹ️ 排序僅作用於本頁 {sortedStocks.length} 筆
-              </div>
-            )}
 
             {/* ── 翻頁 ── */}
             {!searchTerm && totalPages > 1 && (
