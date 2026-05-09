@@ -83,6 +83,8 @@ async def sync_quotes_job():
                         stock.change_percent = change_pct
                         stock.volume = volume
                         stock.trade_date = trade_date
+                        if volume and stock.shares and stock.shares > 0:
+                            stock.turnover_rate = round(volume / stock.shares * 100, 4)
                         stock.updated_at = datetime.now(timezone.utc)
                         updated += 1
                 except Exception as e:
@@ -132,12 +134,23 @@ async def sync_quotes_job():
 
                     change_pct = round(change / (close - change) * 100, 2) if change and close and (close - change) != 0 else None
 
-                    # 上櫃 TradeVolume 單位為「張」(1張=1000股)，乘以 1000 換算為股數
+                    # 上櫃 TradeVolume 單位為「千股」(=張，1張=1000股)，乘以 1000 換算為股數
                     vol_str = str(item.get("TradeVolume", "")).replace(",", "").strip()
                     try:
                         volume = int(float(vol_str)) * 1000 if vol_str else None
                     except (ValueError, TypeError):
                         volume = None
+
+                    # 解析 TPEX 日期格式 "115/05/08" → "20260508"
+                    date_raw = str(item.get("Date", "")).strip()
+                    trade_date_otc = None
+                    if "/" in date_raw:
+                        parts = date_raw.split("/")
+                        try:
+                            ad_year = int(parts[0]) + 1911
+                            trade_date_otc = f"{ad_year}{parts[1]}{parts[2]}"
+                        except (ValueError, IndexError):
+                            pass
 
                     stmt = select(Stock).where(Stock.symbol == symbol)
                     result = await db.execute(stmt)
@@ -150,6 +163,9 @@ async def sync_quotes_job():
                         stock.change_amount  = change
                         stock.change_percent = change_pct
                         stock.volume      = volume
+                        stock.trade_date  = trade_date_otc
+                        if volume and stock.shares and stock.shares > 0:
+                            stock.turnover_rate = round(volume / stock.shares * 100, 4)
                         stock.updated_at  = datetime.now(timezone.utc)
                         updated2 += 1
                 except Exception as e:
