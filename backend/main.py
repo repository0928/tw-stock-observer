@@ -702,6 +702,56 @@ async def sync_dividend_job():
         logger.error(f"❌ 同步上櫃除息日失敗: {e}")
 
 
+# ==================== 資料庫自動遷移 ====================
+
+async def run_migrations():
+    """
+    應用啟動時自動執行資料庫遷移。
+    全部使用 IF NOT EXISTS / ADD COLUMN IF NOT EXISTS，可安全重複執行。
+    """
+    from sqlalchemy import text
+    migrations = [
+        # 季度財務資料表
+        """
+        CREATE TABLE IF NOT EXISTS stock_quarterly_financials (
+            symbol               VARCHAR(10)  NOT NULL,
+            year                 INTEGER      NOT NULL,
+            quarter              INTEGER      NOT NULL CHECK (quarter BETWEEN 1 AND 4),
+            gross_margin         DECIMAL(8, 2),
+            net_income           BIGINT,
+            revenue              BIGINT,
+            contract_liabilities BIGINT,
+            inventories          BIGINT,
+            updated_at           TIMESTAMPTZ,
+            PRIMARY KEY (symbol, year, quarter)
+        )
+        """,
+        # 索引
+        """
+        CREATE INDEX IF NOT EXISTS idx_sqf_symbol_year_q
+            ON stock_quarterly_financials (symbol, year DESC, quarter DESC)
+        """,
+        # stocks 表新增 inventory_turnover 欄位
+        """
+        ALTER TABLE stocks
+            ADD COLUMN IF NOT EXISTS inventory_turnover DECIMAL(8, 2)
+        """,
+        # inventory_turnover 索引
+        """
+        CREATE INDEX IF NOT EXISTS idx_stocks_inventory_turnover
+            ON stocks (inventory_turnover)
+            WHERE inventory_turnover IS NOT NULL
+        """,
+    ]
+    try:
+        async with engine.begin() as conn:
+            for sql in migrations:
+                await conn.execute(text(sql.strip()))
+        logger.info("✅ 資料庫遷移完成（stock_quarterly_financials + inventory_turnover）")
+    except Exception as e:
+        logger.error(f"❌ 資料庫遷移失敗: {e}")
+
+
 # ==================== 應用生命週期 ====================
 
 scheduler = AsyncIOScheduler()
@@ -715,6 +765,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info("✅ 資料庫初始化成功")
     except Exception as e:
         logger.error(f"❌ 資料庫初始化失敗: {e}")
+
+    await run_migrations()
 
     # 每天 UTC 08:30（台灣 16:30，收盤後）同步行情
     scheduler.add_job(
