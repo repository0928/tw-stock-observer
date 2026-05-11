@@ -303,11 +303,11 @@ async def sync_pe_job():
 
 
 async def sync_financial_job():
-    """每週自動從 Goodinfo 同步 ROE、ROA、負債比率"""
-    logger.info("⏰ 開始自動同步 Goodinfo 財務資料（ROE / ROA / 負債比率）...")
+    """每週自動從 FinMind 同步 ROE、ROA、負債比率，以及季度財務資料（毛利率、淨利、營收、合約負債、存貨）"""
+    logger.info("⏰ 開始自動同步財務資料（ROE/ROA/負債比率 + 季度財務）...")
     try:
         from app.services.goodinfo_scraper import fetch_goodinfo_financial
-        from app.models import Stock
+        from app.models import Stock, StockQuarterlyFinancial
         from decimal import Decimal
         import asyncio
 
@@ -323,15 +323,16 @@ async def sync_financial_job():
             for i, symbol in enumerate(symbols):
                 try:
                     if i > 0:
-                        await asyncio.sleep(2.0)  # FinMind API：每股票間隔 2 秒（加上內部 1 秒 = ~4 秒/股票，約 30 req/min，在免費額度內）
+                        await asyncio.sleep(2.0)  # FinMind API：每股票間隔 2 秒（加上內部 1 秒 = ~4 秒/股票）
 
                     data = await fetch_goodinfo_financial(symbol)
 
+                    # ── 更新 stocks 表（ROE / ROA / 負債比率）──────────────
                     stock_stmt = select(Stock).where(Stock.symbol == symbol)
                     stock_result = await db.execute(stock_stmt)
                     stock = stock_result.scalar_one_or_none()
 
-                    if stock and any(v is not None for v in data.values()):
+                    if stock:
                         if data.get("roe") is not None:
                             stock.roe = Decimal(str(data["roe"]))
                         if data.get("roa") is not None:
@@ -340,6 +341,16 @@ async def sync_financial_job():
                             stock.debt_ratio = Decimal(str(data["debt_ratio"]))
                         stock.financial_data_updated_at = datetime.now(timezone.utc)
                         success += 1
+
+                    # ── Upsert 季度財務資料 ───────────────────────────────
+                    for q in data.get("quarterly", []):
+                        await _upsert_quarterly(db, symbol, q)
+
+                    # ── 計算 TTM 存貨周轉率並寫回 stocks 表 ─────────────
+                    if stock:
+                        inv_turnover = await _calc_inventory_turnover(db, symbol)
+                        if inv_turnover is not None:
+                            stock.inventory_turnover = Decimal(str(inv_turnover))
 
                     # 每 50 筆 commit 一次，減少記憶體壓力
                     if (i + 1) % 50 == 0:
@@ -351,11 +362,90 @@ async def sync_financial_job():
                     failed += 1
 
             await db.commit()
-            logger.info(f"✅ Goodinfo 財務資料同步完成: 成功 {success}，失敗 {failed}")
+            logger.info(f"✅ 財務資料同步完成: 成功 {success}，失敗 {failed}")
             break
 
     except Exception as e:
-        logger.error(f"❌ 自動同步 Goodinfo 財務資料失敗: {e}")
+        logger.error(f"❌ 自動同步財務資料失敗: {e}")
+
+
+async def _upsert_quarterly(db, symbol: str, q: dict):
+    """
+    將單季財務資料 upsert 至 stock_quarterly_financials。
+    使用 PostgreSQL ON CONFLICT DO UPDATE。
+    """
+    from app.models import StockQuarterlyFinancial
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    stmt = pg_insert(StockQuarterlyFinancial).values(
+        symbol               = symbol,
+        year                 = q["year"],
+        quarter              = q["quarter"],
+        gross_margin         = q.get("gross_margin"),
+        net_income           = q.get("net_income"),
+        revenue              = q.get("revenue"),
+        contract_liabilities = q.get("contract_liabilities"),
+        inventories          = q.get("inventories"),
+        updated_at           = datetime.now(timezone.utc),
+    ).on_conflict_do_update(
+        index_elements=["symbol", "year", "quarter"],
+        set_={
+            "gross_margin":         q.get("gross_margin"),
+            "net_income":           q.get("net_income"),
+            "revenue":              q.get("revenue"),
+            "contract_liabilities": q.get("contract_liabilities"),
+            "inventories":          q.get("inventories"),
+            "updated_at":           datetime.now(timezone.utc),
+        },
+    )
+    await db.execute(stmt)
+
+
+async def _calc_inventory_turnover(db, symbol: str) -> float | None:
+    """
+    計算 TTM（近四季滾動）年化存貨周轉率。
+    公式：TTM 銷貨成本 / 最新期末存貨
+        = Σ 近四季 revenue*(1 - gross_margin/100) / 最新季 inventories
+    若存貨為 0 或 NULL 則回傳 None。
+    """
+    from app.models import StockQuarterlyFinancial
+    from sqlalchemy import desc
+
+    stmt = (
+        select(StockQuarterlyFinancial)
+        .where(StockQuarterlyFinancial.symbol == symbol)
+        .order_by(
+            desc(StockQuarterlyFinancial.year),
+            desc(StockQuarterlyFinancial.quarter),
+        )
+        .limit(4)
+    )
+    result = await db.execute(stmt)
+    rows = result.scalars().all()
+
+    if not rows:
+        return None
+
+    latest = rows[0]
+    if not latest.inventories or latest.inventories == 0:
+        return None
+
+    ttm_cogs = 0.0
+    valid_quarters = 0
+    for row in rows:
+        if row.revenue is None or row.gross_margin is None:
+            continue
+        cogs = float(row.revenue) * (1 - float(row.gross_margin) / 100)
+        ttm_cogs += cogs
+        valid_quarters += 1
+
+    if valid_quarters == 0:
+        return None
+
+    # 若不足 4 季，按比例年化
+    annualized_cogs = ttm_cogs * (4 / valid_quarters)
+    turnover = annualized_cogs / float(latest.inventories)
+    return round(turnover, 2)
 
 
 async def sync_eps_job():
@@ -419,6 +509,199 @@ async def sync_eps_job():
         logger.error(f"❌ 自動同步 EPS 失敗: {e}")
 
 
+async def sync_margin_job():
+    """每日同步融資融券餘額（上市 + 上櫃）"""
+    logger.info("⏰ 開始同步融資融券...")
+    ctx = _ssl_ctx()
+
+    # ── 上市融資融券 ──
+    try:
+        url = "https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&selectType=ALL"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        rows = data.get("data", [])
+        # fields: [股票代號, 股票名稱, 融資買進, 融資賣出, 融資現金償還, 融資餘額, 融資限額,
+        #          融券買進, 融券賣出, 融券現金償還, 融券餘額, 融券限額, 資券互抵]
+        # index:   0         1         2         3         4             5       6
+        #          7         8         9             10      11      12
+
+        async for db in get_db():
+            updated = 0
+            for row in rows:
+                symbol = str(row[0]).strip()
+                if not symbol.isdigit():
+                    continue
+                try:
+                    def to_int(val):
+                        v = str(val).replace(",", "").strip()
+                        return int(float(v)) if v not in ("--", "", "N/A") else None
+
+                    ml = to_int(row[5])   # 融資餘額（張）
+                    ms = to_int(row[10])  # 融券餘額（張）
+
+                    stmt = select(Stock).where(Stock.symbol == symbol)
+                    result = await db.execute(stmt)
+                    stock = result.scalar_one_or_none()
+                    if stock:
+                        stock.margin_long  = ml
+                        stock.margin_short = ms
+                        stock.updated_at   = datetime.now(timezone.utc)
+                        updated += 1
+                except Exception as e:
+                    logger.error(f"更新上市融資券 {symbol} 失敗: {e}")
+
+            await db.commit()
+            logger.info(f"✅ 上市融資融券同步完成: {updated} 筆")
+            break
+    except Exception as e:
+        logger.error(f"❌ 同步上市融資融券失敗: {e}")
+
+    # ── 上櫃融資融券 ──
+    try:
+        url2 = "https://www.tpex.org.tw/openapi/v1/tpex_margin_trading_balance"
+        with urllib.request.urlopen(url2, context=ctx, timeout=30) as resp2:
+            otc_data = json.loads(resp2.read().decode('utf-8'))
+
+        async for db in get_db():
+            updated2 = 0
+            for item in otc_data:
+                symbol = item.get("SecuritiesCompanyCode", "").strip()
+                if not symbol.isdigit():
+                    continue
+                try:
+                    def to_int2(val):
+                        v = str(val).replace(",", "").strip()
+                        return int(float(v)) if v not in ("--", "", "N/A") else None
+
+                    ml = to_int2(item.get("MarginPurchaseBalance", ""))  # 融資餘額（張）
+                    ms = to_int2(item.get("ShortSaleBalance", ""))        # 融券餘額（張）
+
+                    stmt = select(Stock).where(Stock.symbol == symbol)
+                    result = await db.execute(stmt)
+                    stock = result.scalar_one_or_none()
+                    if stock:
+                        stock.margin_long  = ml
+                        stock.margin_short = ms
+                        stock.updated_at   = datetime.now(timezone.utc)
+                        updated2 += 1
+                except Exception as e:
+                    logger.error(f"更新上櫃融資券 {symbol} 失敗: {e}")
+
+            await db.commit()
+            logger.info(f"✅ 上櫃融資融券同步完成: {updated2} 筆")
+            break
+    except Exception as e:
+        logger.error(f"❌ 同步上櫃融資融券失敗: {e}")
+
+
+async def sync_dividend_job():
+    """每日同步除息日、現金股利（上市 + 上櫃）"""
+    logger.info("⏰ 開始同步除息日...")
+    ctx = _ssl_ctx()
+
+    from datetime import date as date_type
+
+    def parse_roc_date(date_str: str):
+        """解析民國年日期 '115/05/20' → date(2026, 5, 20)"""
+        s = str(date_str).strip()
+        if "/" in s:
+            parts = s.split("/")
+            try:
+                return date_type(int(parts[0]) + 1911, int(parts[1]), int(parts[2]))
+            except (ValueError, IndexError):
+                pass
+        return None
+
+    # ── 上市除息日 ──
+    try:
+        url = "https://www.twse.com.tw/rwd/zh/exRight/TWT49U?response=json"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        rows = data.get("data", [])
+        # fields: [除權息日期, 股票代號, 名稱, 除權息前收盤價, 除息參考價, 除權參考價, 現金股利, 股票股利, ...]
+        # index:   0            1         2     3                4           5           6         7
+
+        async for db in get_db():
+            updated = 0
+            for row in rows:
+                if len(row) < 7:
+                    continue
+                symbol = str(row[1]).strip()
+                if not symbol.isdigit():
+                    continue
+                try:
+                    ex_date = parse_roc_date(row[0])
+                    cash_div = None
+                    v = str(row[6]).replace(",", "").strip()
+                    if v not in ("--", "", "N/A", "0"):
+                        try:
+                            cash_div = float(v)
+                        except ValueError:
+                            pass
+
+                    stmt = select(Stock).where(Stock.symbol == symbol)
+                    result = await db.execute(stmt)
+                    stock = result.scalar_one_or_none()
+                    if stock:
+                        if ex_date:
+                            stock.ex_dividend_date = ex_date
+                        if cash_div is not None:
+                            stock.cash_dividend = cash_div
+                        stock.updated_at = datetime.now(timezone.utc)
+                        updated += 1
+                except Exception as e:
+                    logger.error(f"更新除息日 {symbol} 失敗: {e}")
+
+            await db.commit()
+            logger.info(f"✅ 上市除息日同步完成: {updated} 筆")
+            break
+    except Exception as e:
+        logger.error(f"❌ 同步上市除息日失敗: {e}")
+
+    # ── 上櫃除息日 ──
+    try:
+        url2 = "https://www.tpex.org.tw/openapi/v1/tpex_exright_list"
+        with urllib.request.urlopen(url2, context=ctx, timeout=30) as resp2:
+            otc_data = json.loads(resp2.read().decode('utf-8'))
+
+        async for db in get_db():
+            updated2 = 0
+            for item in otc_data:
+                symbol = item.get("SecuritiesCompanyCode", "").strip()
+                if not symbol.isdigit():
+                    continue
+                try:
+                    ex_date = parse_roc_date(item.get("ExRightExDividendDate", ""))
+                    cash_div = None
+                    v = str(item.get("CashDividend", "")).replace(",", "").strip()
+                    if v not in ("--", "", "N/A", "0"):
+                        try:
+                            cash_div = float(v)
+                        except ValueError:
+                            pass
+
+                    stmt = select(Stock).where(Stock.symbol == symbol)
+                    result = await db.execute(stmt)
+                    stock = result.scalar_one_or_none()
+                    if stock:
+                        if ex_date:
+                            stock.ex_dividend_date = ex_date
+                        if cash_div is not None:
+                            stock.cash_dividend = cash_div
+                        stock.updated_at = datetime.now(timezone.utc)
+                        updated2 += 1
+                except Exception as e:
+                    logger.error(f"更新上櫃除息日 {symbol} 失敗: {e}")
+
+            await db.commit()
+            logger.info(f"✅ 上櫃除息日同步完成: {updated2} 筆")
+            break
+    except Exception as e:
+        logger.error(f"❌ 同步上櫃除息日失敗: {e}")
+
+
 # ==================== 應用生命週期 ====================
 
 scheduler = AsyncIOScheduler()
@@ -471,6 +754,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         sync_financial_job,
         CronTrigger(day_of_week="sun", hour=16, minute=10, timezone="UTC"),
         id="sync_financial",
+        replace_existing=True,
+    )
+
+    # 每天 UTC 09:10（台灣 17:10）同步融資融券餘額
+    scheduler.add_job(
+        sync_margin_job,
+        CronTrigger(hour=9, minute=10, timezone="UTC"),
+        id="sync_margin",
+        replace_existing=True,
+    )
+
+    # 每天 UTC 09:20（台灣 17:20）同步除息日、現金股利
+    scheduler.add_job(
+        sync_dividend_job,
+        CronTrigger(hour=9, minute=20, timezone="UTC"),
+        id="sync_dividend",
         replace_existing=True,
     )
 

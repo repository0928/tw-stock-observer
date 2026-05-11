@@ -142,6 +142,9 @@ class Stock(BaseModel):
     is_disposed = Column(Boolean, default=False)    # 處置股票
     is_etf = Column(Boolean, default=False)         # ETF（代號 00 開頭）
 
+    # 效率指標（TTM，近四季滾動年化）
+    inventory_turnover = Column(DECIMAL(8, 2))       # 存貨周轉率（次/年）
+
     # 股利
     ex_dividend_date = Column(Date)                 # 除息日
     cash_dividend = Column(DECIMAL(8, 4))           # 現金股利（元/股）
@@ -367,6 +370,36 @@ class StockAnnouncement(Base):
 
     __table_args__ = (
         Index("idx_ann_symbol_date", "symbol", "announce_date"),
+    )
+
+
+# ==================== 季度財務模型 ====================
+
+class StockQuarterlyFinancial(Base):
+    """
+    股票季度財務資料
+    每季一列，供跨季趨勢分析（毛利率逐季增加、合約負債成長等）使用。
+    資料來源：FinMind TaiwanStockFinancialStatements + TaiwanStockBalanceSheet
+    """
+    __tablename__ = "stock_quarterly_financials"
+
+    symbol   = Column(String(10), nullable=False, primary_key=True)
+    year     = Column(Integer,    nullable=False, primary_key=True)
+    quarter  = Column(Integer,    nullable=False, primary_key=True)  # 1~4
+
+    # 損益（來自 TaiwanStockFinancialStatements）
+    gross_margin  = Column(DECIMAL(8, 2))   # 毛利率 (%)
+    net_income    = Column(BIGINT)           # 稅後淨利（千元）
+    revenue       = Column(BIGINT)           # 營收（千元）
+
+    # 資產負債（來自 TaiwanStockBalanceSheet）
+    contract_liabilities = Column(BIGINT)   # 合約負債（千元）
+    inventories          = Column(BIGINT)   # 存貨（千元）
+
+    updated_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("idx_sqf_symbol_year_q", "symbol", "year", "quarter"),
     )
 
 

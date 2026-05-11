@@ -3,6 +3,7 @@ Stock API Endpoints
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request
@@ -453,6 +454,389 @@ async def get_stock_announcements(
         return [AnnouncementOut.from_orm(r) for r in rows]
     except Exception as e:
         logger.error(f"取得重大訊息失敗 {symbol}: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+# ==================== 季度財務篩選端點（Screener） ====================
+
+@router.post("/sync-quarterly-financials")
+async def sync_quarterly_financials(
+    background_tasks: BackgroundTasks,
+    symbols: Optional[List[str]] = None,
+    limit: int = Query(100, ge=1, le=2000),
+    delay_seconds: float = Query(2.0, ge=1.0, le=30.0),
+    background: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    手動觸發季度財務資料同步（首次部署補齊歷史資料用）。
+
+    - **symbols**: 指定股票代碼清單（JSON body），不填則取資料庫前 `limit` 筆
+    - **limit**: 最多同步幾筆（預設 100，全量請帶 2000）
+    - **delay_seconds**: 每支股票間隔秒數（預設 2.0）
+    - **background**: true = 立即回傳，背景非同步執行（全量同步建議使用）
+    """
+    from app.database import get_db as _get_db
+    from app.services.goodinfo_scraper import fetch_goodinfo_financial
+    from app.models import Stock, StockQuarterlyFinancial
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from decimal import Decimal
+    import asyncio as _asyncio
+
+    async def _run(syms, lim, delay):
+        try:
+            async for _db in _get_db():
+                if syms:
+                    target_symbols = syms
+                else:
+                    s = select(Stock.symbol).where(
+                        Stock.is_active == True, Stock.is_etf == False
+                    ).order_by(Stock.symbol).limit(lim)
+                    r = await _db.execute(s)
+                    target_symbols = [row[0] for row in r.fetchall()]
+
+                success = failed = 0
+                for i, sym in enumerate(target_symbols):
+                    if i > 0:
+                        await _asyncio.sleep(delay)
+                    try:
+                        data = await fetch_goodinfo_financial(sym)
+                        for q in data.get("quarterly", []):
+                            ins = pg_insert(StockQuarterlyFinancial).values(
+                                symbol=sym, year=q["year"], quarter=q["quarter"],
+                                gross_margin=q.get("gross_margin"),
+                                net_income=q.get("net_income"),
+                                revenue=q.get("revenue"),
+                                contract_liabilities=q.get("contract_liabilities"),
+                                inventories=q.get("inventories"),
+                                updated_at=datetime.now(timezone.utc),
+                            ).on_conflict_do_update(
+                                index_elements=["symbol", "year", "quarter"],
+                                set_={
+                                    "gross_margin": q.get("gross_margin"),
+                                    "net_income": q.get("net_income"),
+                                    "revenue": q.get("revenue"),
+                                    "contract_liabilities": q.get("contract_liabilities"),
+                                    "inventories": q.get("inventories"),
+                                    "updated_at": datetime.now(timezone.utc),
+                                },
+                            )
+                            await _db.execute(ins)
+
+                        # 計算 TTM 存貨周轉率
+                        inv_turnover = await _calc_inv_turnover(_db, sym)
+                        if inv_turnover is not None:
+                            stock_s = select(Stock).where(Stock.symbol == sym)
+                            stock_r = await _db.execute(stock_s)
+                            stk = stock_r.scalar_one_or_none()
+                            if stk:
+                                stk.inventory_turnover = Decimal(str(inv_turnover))
+
+                        if (i + 1) % 50 == 0:
+                            await _db.commit()
+                            logger.info(f"季度同步進度: {i+1}/{len(target_symbols)}")
+                        success += 1
+                    except Exception as e:
+                        logger.error(f"季度同步 {sym} 失敗: {e}")
+                        failed += 1
+
+                await _db.commit()
+                logger.info(f"✅ 季度財務同步完成: 成功 {success}，失敗 {failed}")
+                break
+        except Exception as e:
+            logger.error(f"❌ 背景季度同步失敗: {e}")
+
+    async def _calc_inv_turnover(_db, symbol):
+        from app.models import StockQuarterlyFinancial
+        from sqlalchemy import desc as _desc
+        stmt = (
+            select(StockQuarterlyFinancial)
+            .where(StockQuarterlyFinancial.symbol == symbol)
+            .order_by(_desc(StockQuarterlyFinancial.year), _desc(StockQuarterlyFinancial.quarter))
+            .limit(4)
+        )
+        res = await _db.execute(stmt)
+        rows = res.scalars().all()
+        if not rows:
+            return None
+        latest = rows[0]
+        if not latest.inventories or latest.inventories == 0:
+            return None
+        ttm_cogs = 0.0
+        vq = 0
+        for row in rows:
+            if row.revenue is None or row.gross_margin is None:
+                continue
+            ttm_cogs += float(row.revenue) * (1 - float(row.gross_margin) / 100)
+            vq += 1
+        if vq == 0:
+            return None
+        return round(ttm_cogs * (4 / vq) / float(latest.inventories), 2)
+
+    if background:
+        background_tasks.add_task(_run, symbols, limit, delay_seconds)
+        return {"status": "started", "message": f"背景季度同步已啟動，最多同步 {limit} 筆"}
+
+    try:
+        await _run(symbols, limit, delay_seconds)
+        return {"status": "completed", "message": "季度財務同步完成"}
+    except Exception as e:
+        logger.error(f"季度財務同步失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"同步失敗: {str(e)}")
+
+
+@router.get("/screener/gross-margin-rising")
+async def screener_gross_margin_rising(
+    min_margin: float = Query(30.0, description="每季毛利率下限（%）"),
+    quarters: int = Query(4, ge=2, le=8, description="需要連續幾季"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：最近 N 季毛利率均 ≥ min_margin，且逐季嚴格遞增。
+
+    - **min_margin**: 毛利率門檻（預設 30%）
+    - **quarters**: 需要幾季均符合（預設 4）
+    """
+    from app.models import StockQuarterlyFinancial
+    from sqlalchemy import desc as _desc
+
+    try:
+        # 取出所有有季度資料的股票，各取最近 N 季
+        all_symbols_stmt = select(
+            StockQuarterlyFinancial.symbol
+        ).distinct()
+        sym_result = await db.execute(all_symbols_stmt)
+        all_symbols = [r[0] for r in sym_result.fetchall()]
+
+        matched_symbols = []
+        detail = {}
+
+        for symbol in all_symbols:
+            stmt = (
+                select(StockQuarterlyFinancial)
+                .where(StockQuarterlyFinancial.symbol == symbol)
+                .order_by(
+                    _desc(StockQuarterlyFinancial.year),
+                    _desc(StockQuarterlyFinancial.quarter),
+                )
+                .limit(quarters)
+            )
+            res = await db.execute(stmt)
+            rows = res.scalars().all()
+
+            if len(rows) < quarters:
+                continue
+
+            # 確認每季 gross_margin 都不為 NULL
+            margins = [r.gross_margin for r in rows]
+            if any(m is None for m in margins):
+                continue
+
+            margins_f = [float(m) for m in margins]
+
+            # 每季 ≥ min_margin
+            if not all(m >= min_margin for m in margins_f):
+                continue
+
+            # 嚴格遞增（rows 由新到舊，所以 margins_f[0] 應為最大）
+            is_rising = all(
+                margins_f[i] > margins_f[i + 1]
+                for i in range(len(margins_f) - 1)
+            )
+            if not is_rising:
+                continue
+
+            matched_symbols.append(symbol)
+            detail[symbol] = [
+                {"year": r.year, "quarter": r.quarter, "gross_margin": float(r.gross_margin)}
+                for r in rows
+            ]
+
+        return {
+            "count": len(matched_symbols),
+            "symbols": matched_symbols,
+            "detail": detail,
+        }
+    except Exception as e:
+        logger.error(f"screener gross-margin-rising 失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/screener/net-income-outpace-revenue")
+async def screener_net_income_outpace_revenue(
+    quarters: int = Query(1, ge=1, le=4, description="最近幾季均需符合（預設 1 = 最新季）"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：淨利年增率 > 營收年增率（利潤率擴張）。
+
+    YoY = (本季值 - 去年同季值) / |去年同季值| × 100
+    每季都需符合 NI_yoy > REV_yoy。
+    """
+    from app.models import StockQuarterlyFinancial
+    from sqlalchemy import desc as _desc
+
+    try:
+        all_symbols_stmt = select(StockQuarterlyFinancial.symbol).distinct()
+        sym_result = await db.execute(all_symbols_stmt)
+        all_symbols = [r[0] for r in sym_result.fetchall()]
+
+        matched_symbols = []
+        detail = {}
+
+        for symbol in all_symbols:
+            # 取最近 quarters+4 季（多取 4 季供 YoY 對比）
+            stmt = (
+                select(StockQuarterlyFinancial)
+                .where(StockQuarterlyFinancial.symbol == symbol)
+                .order_by(
+                    _desc(StockQuarterlyFinancial.year),
+                    _desc(StockQuarterlyFinancial.quarter),
+                )
+                .limit(quarters + 4)
+            )
+            res = await db.execute(stmt)
+            rows = res.scalars().all()
+
+            if len(rows) < quarters + 4:
+                continue
+
+            # 建立 (year, quarter) → row 的查找表
+            row_map = {(r.year, r.quarter): r for r in rows}
+
+            # 驗證最新 quarters 季
+            recent = rows[:quarters]
+            q_results = []
+            all_pass = True
+
+            for row in recent:
+                # 去年同季
+                yoy_year = row.year - 1
+                yoy_key = (yoy_year, row.quarter)
+                prev_row = row_map.get(yoy_key)
+                if prev_row is None:
+                    all_pass = False
+                    break
+
+                if (row.net_income is None or prev_row.net_income is None or
+                        row.revenue is None or prev_row.revenue is None):
+                    all_pass = False
+                    break
+
+                prev_ni = float(prev_row.net_income)
+                prev_rev = float(prev_row.revenue)
+                if prev_ni == 0 or prev_rev == 0:
+                    all_pass = False
+                    break
+
+                ni_yoy = (float(row.net_income) - prev_ni) / abs(prev_ni) * 100
+                rev_yoy = (float(row.revenue) - prev_rev) / abs(prev_rev) * 100
+
+                if ni_yoy <= rev_yoy:
+                    all_pass = False
+                    break
+
+                q_results.append({
+                    "year": row.year, "quarter": row.quarter,
+                    "ni_yoy": round(ni_yoy, 2),
+                    "rev_yoy": round(rev_yoy, 2),
+                })
+
+            if all_pass and q_results:
+                matched_symbols.append(symbol)
+                detail[symbol] = q_results
+
+        return {
+            "count": len(matched_symbols),
+            "symbols": matched_symbols,
+            "detail": detail,
+        }
+    except Exception as e:
+        logger.error(f"screener net-income-outpace-revenue 失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/screener/contract-liabilities-growth")
+async def screener_contract_liabilities_growth(
+    min_qoq_pct: float = Query(20.0, description="單季 QoQ 增幅門檻（%，條件 B）"),
+    consecutive: int = Query(3, ge=2, le=8, description="連續季增幾季（條件 A）"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：合約負債「連續 N 季增加（條件 A）」OR「單季 QoQ ≥ min_qoq_pct%（條件 B）」。
+    符合其中一項即入選。無合約負債資料的股票自動排除。
+    """
+    from app.models import StockQuarterlyFinancial
+    from sqlalchemy import desc as _desc
+
+    try:
+        all_symbols_stmt = select(StockQuarterlyFinancial.symbol).distinct()
+        sym_result = await db.execute(all_symbols_stmt)
+        all_symbols = [r[0] for r in sym_result.fetchall()]
+
+        matched_symbols = []
+        detail = {}
+
+        for symbol in all_symbols:
+            need = max(consecutive + 1, 2)  # 連續判斷需多取 1 季作為起始基準
+            stmt = (
+                select(StockQuarterlyFinancial)
+                .where(
+                    StockQuarterlyFinancial.symbol == symbol,
+                    StockQuarterlyFinancial.contract_liabilities.is_not(None),
+                )
+                .order_by(
+                    _desc(StockQuarterlyFinancial.year),
+                    _desc(StockQuarterlyFinancial.quarter),
+                )
+                .limit(need)
+            )
+            res = await db.execute(stmt)
+            rows = res.scalars().all()
+
+            # 沒有合約負債資料 → 排除
+            if len(rows) < 2:
+                continue
+
+            cl_values = [float(r.contract_liabilities) for r in rows]  # 由新到舊
+
+            # 條件 B：最新一季 QoQ
+            latest_qoq = None
+            if cl_values[1] and cl_values[1] != 0:
+                latest_qoq = (cl_values[0] - cl_values[1]) / abs(cl_values[1]) * 100
+
+            cond_b = latest_qoq is not None and latest_qoq >= min_qoq_pct
+
+            # 條件 A：連續 consecutive 季增加
+            cond_a = False
+            if len(rows) >= consecutive + 1:
+                cond_a = all(
+                    cl_values[i] > cl_values[i + 1]
+                    for i in range(consecutive)
+                )
+
+            if not (cond_a or cond_b):
+                continue
+
+            matched_symbols.append(symbol)
+            detail[symbol] = [
+                {
+                    "year": r.year, "quarter": r.quarter,
+                    "contract_liabilities": int(r.contract_liabilities),
+                    "qoq_pct": round(
+                        (cl_values[j] - cl_values[j + 1]) / abs(cl_values[j + 1]) * 100, 2
+                    ) if j + 1 < len(cl_values) and cl_values[j + 1] != 0 else None,
+                }
+                for j, r in enumerate(rows)
+            ]
+
+        return {
+            "count": len(matched_symbols),
+            "symbols": matched_symbols,
+            "detail": detail,
+        }
+    except Exception as e:
+        logger.error(f"screener contract-liabilities-growth 失敗: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
 
 

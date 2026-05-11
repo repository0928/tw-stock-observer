@@ -53,6 +53,8 @@ interface Stock {
   ex_dividend_date?: string
   cash_dividend?: number | string
   dividend_per_share?: number | string
+  // 效率指標
+  inventory_turnover?: number | string
   // 基本資料（補充）
   listing_date?: string
   capital_stock?: number
@@ -116,6 +118,15 @@ type QuickFilterKey =
   | 'foreign_buy' | 'trust_buy' | 'high_margin_long'
   | 'is_attention' | 'is_disposed'
   | 'demand_increase'
+  | 'gross_margin_rising' | 'net_income_outpace' | 'contract_liabilities_growth'
+  | 'high_inventory_turnover'
+
+// 呼叫 screener API 的篩選 key 與對應端點
+const SCREENER_ENDPOINT_MAP: Partial<Record<QuickFilterKey, string>> = {
+  gross_margin_rising:          'gross-margin-rising',
+  net_income_outpace:           'net-income-outpace-revenue',
+  contract_liabilities_growth:  'contract-liabilities-growth',
+}
 
 interface QuickFilterDef {
   key: QuickFilterKey
@@ -188,6 +199,22 @@ const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
       {
         key: 'high_gross_margin', label: '高毛利率', emoji: '🏭', tooltip: '毛利率 ≥ 30%',
         conditions: [{ field: 'gross_margin', op: 'min', value: 30 }],
+      },
+      {
+        key: 'gross_margin_rising', label: '毛利率逐季↑', emoji: '📈', tooltip: '最近 4 季毛利率均 ≥ 30% 且逐季遞增',
+        conditions: [],
+      },
+      {
+        key: 'net_income_outpace', label: '淨利增幅>營收', emoji: '🔍', tooltip: '最新季淨利年增率 > 營收年增率（利潤率擴張）',
+        conditions: [],
+      },
+      {
+        key: 'contract_liabilities_growth', label: '合約負債增加', emoji: '📦', tooltip: '合約負債連續 3 季增加，或單季 QoQ ≥ 20%',
+        conditions: [],
+      },
+      {
+        key: 'high_inventory_turnover', label: '高存貨周轉', emoji: '⚡', tooltip: '年化存貨周轉率 ≥ 4 次（近四季 TTM）',
+        conditions: [{ field: 'inventory_turnover', op: 'min', value: 4 }],
       },
       {
         key: 'high_roe', label: '高 ROE', emoji: '📐', tooltip: 'ROE ≥ 15%',
@@ -326,6 +353,7 @@ const COLUMN_DEFS: ColumnDef[] = [
   { label: 'ROE%',       key: 'roe',                     group: '財報', defaultVisible: false },
   { label: 'ROA%',       key: 'roa',                     group: '財報', defaultVisible: false },
   { label: '負債比%',   key: 'debt_ratio',              group: '財報', defaultVisible: false },
+  { label: '存貨周轉',  key: 'inventory_turnover',      group: '財報', defaultVisible: false },
   // 籌碼
   { label: '融資(張)',   key: 'margin_long',             group: '籌碼', defaultVisible: false },
   { label: '融券(張)',   key: 'margin_short',            group: '籌碼', defaultVisible: false },
@@ -391,6 +419,28 @@ function App() {
   const [showColPanel, setShowColPanel] = useState(false)
   const colPanelRef = useRef<HTMLDivElement>(null)
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ── Screener 狀態（symbol 白名單篩選） ────────────────────────────────────
+  const [screenerMap, setScreenerMap] = useState<Map<QuickFilterKey, Set<string>>>(new Map())
+  const [screenerLoading, setScreenerLoading] = useState(false)
+
+  const fetchScreenerResults = useCallback(async (key: QuickFilterKey, endpoint: string) => {
+    setScreenerLoading(true)
+    try {
+      const res = await fetch(`${API_URL}/v1/stocks/screener/${endpoint}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      const symbols: string[] = data.symbols || []
+      setScreenerMap(prev => {
+        const next = new Map(prev)
+        next.set(key, new Set(symbols))
+        return next
+      })
+    } catch (e) {
+      console.error(`screener ${endpoint} failed:`, e)
+    }
+    setScreenerLoading(false)
+  }, [])
 
   // ── 大盤指數 ──────────────────────────────────────────────────────────────
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([])
@@ -555,10 +605,30 @@ function App() {
   const handleQuickFilter = (key: QuickFilterKey) => {
     const def = ALL_FILTERS.find(f => f.key === key)
     if (!def || def.disabled) return
+
+    const screenerEndpoint = SCREENER_ENDPOINT_MAP[key]
+    const isScreenerKey = !!screenerEndpoint
+
     setActiveFilters(prev => {
       const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
+      if (next.has(key)) {
+        // 取消：移除篩選，若是 screener key 也清掉 map 裡的 set
+        next.delete(key)
+        if (isScreenerKey) {
+          setScreenerMap(sm => {
+            const nsm = new Map(sm)
+            nsm.delete(key)
+            return nsm
+          })
+        }
+      } else {
+        next.add(key)
+        // 若是 screener key，非同步呼叫 screener API
+        if (isScreenerKey) {
+          fetchScreenerResults(key, screenerEndpoint!)
+        }
+      }
+      // 一般 conditions（高存貨周轉率本身也有 conditions，照常傳給後端）
       const conditions = getActiveConditions(next)
       setPage(1)
       setSearchTerm('')
@@ -569,6 +639,9 @@ function App() {
   }
 
   const handleClearFilter = (key: QuickFilterKey) => {
+    if (SCREENER_ENDPOINT_MAP[key]) {
+      setScreenerMap(sm => { const nsm = new Map(sm); nsm.delete(key); return nsm })
+    }
     setActiveFilters(prev => {
       const next = new Set(prev)
       next.delete(key)
@@ -580,6 +653,7 @@ function App() {
   }
 
   const handleClearAll = () => {
+    setScreenerMap(new Map())
     setActiveFilters(new Set())
     setPage(1)
     fetchStocks(1, '', marketFilter, sectorFilter, [])
@@ -701,7 +775,8 @@ function App() {
       case 'net_margin':      return <span style={{ color: '#ccc' }}>{fmt(s.net_margin)}</span>
       case 'roe':             return <span style={{ color: '#ccc' }}>{fmt(s.roe)}</span>
       case 'roa':             return <span style={{ color: '#ccc' }}>{fmt(s.roa)}</span>
-      case 'debt_ratio':      return <span style={{ color: '#ccc' }}>{fmt(s.debt_ratio)}</span>
+      case 'debt_ratio':          return <span style={{ color: '#ccc' }}>{fmt(s.debt_ratio)}</span>
+      case 'inventory_turnover':  return <span style={{ color: s.inventory_turnover != null && Number(s.inventory_turnover) >= 4 ? '#51cf66' : '#ccc' }}>{s.inventory_turnover != null ? fmt(s.inventory_turnover, 1) + ' 次' : '--'}</span>
       case 'margin_long':     return <span style={{ color: s.margin_long != null && s.margin_long > 0 ? '#ffc107' : '#aaa' }}>{fmtInt(s.margin_long)}</span>
       case 'margin_short':    return <span style={{ color: s.margin_short != null && s.margin_short > 0 ? '#ff6b6b' : '#aaa' }}>{fmtInt(s.margin_short)}</span>
       case 'ex_dividend_date':   return <span style={{ color: '#51cf66', fontSize: '0.83rem' }}>{s.ex_dividend_date || '--'}</span>
@@ -715,7 +790,15 @@ function App() {
     }
   }
 
-  const sortedStocks = stocks  // 排序已由後端處理
+  // screener 白名單：多個 screener 結果取交集（AND 邏輯）
+  const displayedStocks = screenerMap.size === 0
+    ? stocks
+    : stocks.filter(s => {
+        for (const symbolSet of screenerMap.values()) {
+          if (!symbolSet.has(s.symbol)) return false
+        }
+        return true
+      })
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
   const activeFilterDefs = ALL_FILTERS.filter(f => activeFilters.has(f.key))
@@ -942,6 +1025,13 @@ function App() {
           )}
         </div>
 
+        {/* ── Screener 載入提示 ── */}
+        {screenerLoading && (
+          <div style={{ color: '#aaa', padding: '6px 12px', marginBottom: '6px', background: 'rgba(124,58,237,0.08)', border: '1px solid rgba(124,58,237,0.2)', borderRadius: '6px', fontSize: '0.83rem' }}>
+            ⏳ 正在從篩選器載入符合條件的股票名單…
+          </div>
+        )}
+
         {/* ── 錯誤訊息 ── */}
         {error && (
           <div style={{ color: '#f44336', padding: '0.75rem 1rem', marginBottom: '1rem', background: 'rgba(244,67,54,0.08)', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -973,7 +1063,7 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sortedStocks.length === 0 && (
+                  {displayedStocks.length === 0 && (
                     <tr>
                       <td colSpan={visibleCols.length} style={{ padding: '3rem', textAlign: 'center', color: '#666' }}>
                         <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🔍</div>
@@ -987,7 +1077,7 @@ function App() {
                       </td>
                     </tr>
                   )}
-                  {sortedStocks.map((s, i) => (
+                  {displayedStocks.map((s, i) => (
                     <tr key={s.symbol} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                       {visibleCols.map(({ key }) => (
                         <td key={key} style={{ padding: '8px 12px', textAlign: key === 'symbol' || key === 'name' || key === 'market_type' || key === 'sector' ? 'left' : 'right' }}>
