@@ -1354,7 +1354,7 @@ function App() {
               <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: '0.9rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
                 <thead>
                   <tr style={{ background: '#1e1e38' }}>
-                    {visibleCols.map(({ label, key }, colIdx) => {
+                    {visibleCols.map(({ label, key }) => {
                       const isSymbol = key === 'symbol'
                       const isName   = key === 'name'
                       const stickyStyle: React.CSSProperties = isSymbol
