@@ -39,8 +39,9 @@ for row in rows:
         high    = parse_num(row[5])
         low     = parse_num(row[6])
         close   = parse_num(row[7])
-        change_str = row[8].replace(",", "").replace("+", "").strip()
-        change  = float(change_str) if change_str not in ("--", "", "X") else None
+        # 去除 X 前綴（撮合異常標記，如 X0.00）
+        change_str = row[8].replace(",", "").replace("+", "").replace("X", "").strip()
+        change  = float(change_str) if change_str not in ("--", "", "") else None
         change_pct = round(change / (close - change) * 100, 2) if change and close and (close - change) != 0 else None
 
         # 上市成交量單位為「股」，直接儲存
@@ -70,29 +71,63 @@ print(f"✅ 上市行情更新完成！更新 {updated} 筆")
 
 # 同步上櫃行情
 print("下載上櫃股票行情...")
-r2 = requests.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes", timeout=30, verify=False)
-updated2 = 0
 
 def safe_float(val, default=None):
     v = str(val).replace(",", "").strip()
-    if v in ("--", "", "0", "N/A"):
+    if v in ("--", "", "N/A"):
         return default
     try:
         return float(v)
     except (ValueError, TypeError):
         return default
 
-for item in r2.json():
-    symbol = item.get("SecuritiesCompanyCode", "").strip()
+# TPEx openapi 可能回傳 HTML，嘗試多個 URL
+OTC_QUOTE_URLS = [
+    "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes",
+    "https://www.tpex.org.tw/openapi/v1/tpex_updown_quotes",
+]
+otc_items = []
+otc_date = ""
+for _url in OTC_QUOTE_URLS:
+    try:
+        r2 = requests.get(_url, timeout=30, verify=False,
+                          headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        body = r2.text.strip()
+        if not body or body.startswith("<"):
+            print(f"  {_url} -> 回傳 HTML，跳過")
+            continue
+        data2 = r2.json()
+        items = data2 if isinstance(data2, list) else data2.get("data", [])
+        if items:
+            otc_items = items
+            # 嘗試取日期
+            if isinstance(data2, dict):
+                otc_date = data2.get("date", data2.get("Date", ""))
+            print(f"  使用 URL: {_url}，共 {len(otc_items)} 筆")
+            # 印出第一筆的 keys 供診斷
+            if otc_items:
+                print(f"  欄位: {list(otc_items[0].keys())[:10]}")
+            break
+        else:
+            print(f"  {_url} -> 空資料")
+    except Exception as e:
+        print(f"  {_url} -> 失敗: {e}")
+
+if not otc_items:
+    print("  上櫃行情 API 無可用 URL，跳過")
+
+updated2 = 0
+for item in otc_items:
+    symbol = str(item.get("SecuritiesCompanyCode") or item.get("Code") or "").strip()
     if not symbol.isdigit():
         continue
     try:
-        close   = safe_float(item.get("Close", ""))
-        open_p  = safe_float(item.get("Open", ""))
-        high    = safe_float(item.get("High", ""))
-        low     = safe_float(item.get("Low", ""))
+        close   = safe_float(item.get("Close") or item.get("ClosingPrice"))
+        open_p  = safe_float(item.get("Open")  or item.get("OpeningPrice"))
+        high    = safe_float(item.get("High")  or item.get("HighestPrice"))
+        low     = safe_float(item.get("Low")   or item.get("LowestPrice"))
 
-        change_str = str(item.get("Change", "")).replace(",", "").replace("+", "").strip()
+        change_str = str(item.get("Change") or item.get("PriceChange") or "").replace(",", "").replace("+", "").strip()
         change = None
         if change_str not in ("--", "", "X", "N/A"):
             try:
@@ -102,26 +137,44 @@ for item in r2.json():
 
         change_pct = round(change / (close - change) * 100, 2) if change and close and (close - change) != 0 else None
 
-        # 上櫃 TradeVolume 單位為「張」（1張=1000股），乘以 1000 換算為股數以統一單位
-        vol_str = str(item.get("TradeVolume", "")).replace(",", "").strip()
-        try:
-            volume = int(float(vol_str)) * 1000 if vol_str else None
-        except (ValueError, TypeError):
-            volume = None
+        # 成交量
+        # TradingShares = 已是股數（股），不需換算
+        # TradeVolume   = 張（1張=1000股），需乘 1000
+        if "TradingShares" in item:
+            vol_str = str(item.get("TradingShares", "")).replace(",", "").strip()
+            vol_multiplier = 1          # 已是股數
+        else:
+            vol_str = str(item.get("TradeVolume") or item.get("Volume") or "").replace(",", "").strip()
+            vol_multiplier = 1000       # 張 → 股
+        volume = None
+        if vol_str and vol_str not in ("--", "", "N/A"):
+            try:
+                volume = int(float(vol_str)) * vol_multiplier
+            except (ValueError, TypeError):
+                volume = None
 
-        # 週轉率 = 成交股數 / 流通股數 * 100
+        # 週轉率 = 成交股數 / 流通股數 * 100，超過 9999% 視為異常
         shares = shares_map.get(symbol)
-        turnover_rate = round(volume / shares * 100, 4) if volume and shares and shares > 0 else None
+        if volume and shares and shares > 0:
+            raw_tr = volume / shares * 100
+            turnover_rate = round(raw_tr, 4) if raw_tr <= 9999 else None
+        else:
+            turnover_rate = None
+
+        # 日期：優先用 API 提供的，否則用今日
+        item_date = item.get("Date") or item.get("date") or otc_date
+        trade_date_val = item_date if item_date else datetime.now().strftime("%Y/%m/%d")
 
         cur.execute("""
             UPDATE stocks SET
                 open_price = %s, high_price = %s, low_price = %s,
                 close_price = %s, change_amount = %s, change_percent = %s,
-                volume = %s, turnover_rate = %s, updated_at = NOW()
+                volume = %s, trade_date = %s, turnover_rate = %s, updated_at = NOW()
             WHERE symbol = %s
-        """, (open_p, high, low, close, change, change_pct, volume, turnover_rate, symbol))
+        """, (open_p, high, low, close, change, change_pct, volume, trade_date_val, turnover_rate, symbol))
         updated2 += 1
     except Exception as e:
+        conn.rollback()
         print(f"處理上櫃 {symbol} 失敗: {e}")
 
 conn.commit()

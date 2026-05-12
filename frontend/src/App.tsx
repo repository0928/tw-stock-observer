@@ -35,6 +35,7 @@ interface Stock {
   foreign_net_buy?: number
   investment_trust_net_buy?: number
   dealer_net_buy?: number
+  foreign_consecutive_days?: number
   // 財報
   gross_margin?: number | string
   operating_margin?: number | string
@@ -44,6 +45,9 @@ interface Stock {
   debt_ratio?: number | string
   // 融資/融券
   margin_long?: number
+  margin_long_prev?: number
+  margin_long_chg_pct?: number | string
+  margin_surge?: boolean
   margin_short?: number
   // 標記
   is_attention?: boolean
@@ -55,6 +59,11 @@ interface Stock {
   dividend_per_share?: number | string
   // 效率指標
   inventory_turnover?: number | string
+  // 基本面進階指標
+  core_profit_ratio?: number | string
+  roe_quality?: boolean
+  free_cash_flow_ps?: number | string
+  interest_coverage?: number | string
   // 基本資料（補充）
   listing_date?: string
   capital_stock?: number
@@ -120,12 +129,17 @@ type QuickFilterKey =
   | 'demand_increase'
   | 'gross_margin_rising' | 'net_income_outpace' | 'contract_liabilities_growth'
   | 'high_inventory_turnover'
+  | 'roe_quality' | 'core_profit_high'
+  | 'foreign_buy_streak' | 'foreign_sell_streak'
+  | 'margin_surge_alert'
 
 // 呼叫 screener API 的篩選 key 與對應端點
 const SCREENER_ENDPOINT_MAP: Partial<Record<QuickFilterKey, string>> = {
   gross_margin_rising:          'gross-margin-rising',
   net_income_outpace:           'net-income-outpace-revenue',
   contract_liabilities_growth:  'contract-liabilities-growth',
+  roe_quality:                  'roe-quality',
+  core_profit_high:             'core-profit',
 }
 
 interface QuickFilterDef {
@@ -221,6 +235,14 @@ const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
         conditions: [{ field: 'roe', op: 'min', value: 15 }],
       },
       {
+        key: 'roe_quality', label: 'ROE 品質股', emoji: '🏆', tooltip: 'ROE≥15% 且 營益率≥10% 且 毛利率≥30%（多維度交叉驗證高品質獲利）',
+        conditions: [],
+      },
+      {
+        key: 'core_profit_high', label: '本業獲利佔比≥80%', emoji: '🎯', tooltip: '本業獲利佔比（營業利益/稅後淨利）≥80%，排除靠業外灌水的公司',
+        conditions: [],
+      },
+      {
         key: 'high_roa', label: '高 ROA', emoji: '💎', tooltip: 'ROA ≥ 8%',
         conditions: [{ field: 'roa', op: 'min', value: 8 }],
       },
@@ -254,12 +276,24 @@ const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
         conditions: [{ field: 'foreign_net_buy', op: 'min', value: 1000 }],
       },
       {
+        key: 'foreign_buy_streak', label: '外資連買 5+ 天', emoji: '📈', tooltip: '外資連續買超 ≥ 5 個交易日，趨勢成形',
+        conditions: [{ field: 'foreign_consecutive_days', op: 'min', value: 5 }],
+      },
+      {
+        key: 'foreign_sell_streak', label: '外資連賣 5+ 天', emoji: '📉', tooltip: '外資連續賣超 ≥ 5 個交易日（數值 ≤ -5）',
+        conditions: [{ field: 'foreign_consecutive_days', op: 'max', value: -5 }],
+      },
+      {
         key: 'trust_buy', label: '投信大買', emoji: '🏛️', tooltip: '投信買超 ≥ 100 張',
         conditions: [{ field: 'investment_trust_net_buy', op: 'min', value: 100 }],
       },
       {
         key: 'high_margin_long', label: '高融資', emoji: '💳', tooltip: '融資餘額 ≥ 1000 張',
         conditions: [{ field: 'margin_long', op: 'min', value: 1000 }],
+      },
+      {
+        key: 'margin_surge_alert', label: '融資急增⚠️', emoji: '🚨', tooltip: '融資餘額單日暴增 ≥ 20%（散戶追價警訊，波段末段信號）',
+        conditions: [{ field: 'margin_surge', op: 'is_true', value: true }],
       },
       {
         key: 'high_turnover', label: '高週轉率', emoji: '🔄', tooltip: '週轉率 ≥ 5%',
@@ -354,9 +388,13 @@ const COLUMN_DEFS: ColumnDef[] = [
   { label: 'ROA%',       key: 'roa',                     group: '財報', defaultVisible: false },
   { label: '負債比%',   key: 'debt_ratio',              group: '財報', defaultVisible: false },
   { label: '存貨周轉',  key: 'inventory_turnover',      group: '財報', defaultVisible: false },
+  { label: '本業獲利%', key: 'core_profit_ratio',        group: '財報', defaultVisible: false },
+  { label: 'ROE品質',   key: 'roe_quality',              group: '財報', defaultVisible: false },
   // 籌碼
-  { label: '融資(張)',   key: 'margin_long',             group: '籌碼', defaultVisible: false },
-  { label: '融券(張)',   key: 'margin_short',            group: '籌碼', defaultVisible: false },
+  { label: '外資連續天', key: 'foreign_consecutive_days', group: '籌碼', defaultVisible: false },
+  { label: '融資(張)',   key: 'margin_long',              group: '籌碼', defaultVisible: false },
+  { label: '融資增幅%', key: 'margin_long_chg_pct',      group: '籌碼', defaultVisible: false },
+  { label: '融券(張)',  key: 'margin_short',              group: '籌碼', defaultVisible: false },
   // 股利
   { label: '除息日',     key: 'ex_dividend_date',        group: '股利', defaultVisible: false },
   { label: '現金股利',   key: 'cash_dividend',           group: '股利', defaultVisible: false },
@@ -392,6 +430,19 @@ interface MarketIndex {
   price: number | null
   change: number | null
   change_pct: number | null
+}
+
+// ─── 總體經濟指標型別 ──────────────────────────────────────────────────────────
+
+interface MacroIndicator {
+  name: string
+  code: string
+  price: number | null
+  change: number | null
+  change_pct: number | null
+  unit?: string
+  hint?: string
+  link?: string
 }
 
 // ─── 常數 ────────────────────────────────────────────────────────────────────
@@ -463,6 +514,70 @@ function App() {
     const timer = setInterval(fetchIndices, 60_000)
     return () => clearInterval(timer)
   }, [])
+
+  // ── 七大面向說明頁開關 ────────────────────────────────────────────────────
+  const [showGuide, setShowGuide] = useState(false)
+
+  // ── 總體經濟指標 ──────────────────────────────────────────────────────────
+  const [macroIndicators, setMacroIndicators] = useState<MacroIndicator[]>([])
+  const [macroLoading, setMacroLoading] = useState(true)
+
+  useEffect(() => {
+    const fetchMacro = async () => {
+      setMacroLoading(true)
+      try {
+        const res = await fetch(`${API_URL}/v1/market/macro`)
+        if (res.ok) {
+          const data = await res.json()
+          setMacroIndicators(data.indicators || [])
+        }
+      } catch {}
+      setMacroLoading(false)
+    }
+    fetchMacro()
+    // 每 5 分鐘刷新一次（總體數據變動頻率低）
+    const timer = setInterval(fetchMacro, 300_000)
+    return () => clearInterval(timer)
+  }, [])
+
+  // ── 月營收歷史 Sparkline ──────────────────────────────────────────────────
+  interface RevenuePoint { year_month: string; revenue_yoy: number | null; revenue_mom: number | null }
+  const [sparkData, setSparkData] = useState<Map<string, RevenuePoint[]>>(new Map())
+
+  const fetchRevenueHistory = useCallback(async (symbol: string) => {
+    if (sparkData.has(symbol)) return
+    try {
+      const res = await fetch(`${API_URL}/v1/stocks/${symbol}/revenue-history?months=6`)
+      if (res.ok) {
+        const data = await res.json()
+        setSparkData(prev => new Map(prev).set(symbol, data.history || []))
+      }
+    } catch {}
+  }, [sparkData])
+
+  const renderSparkline = (points: RevenuePoint[]) => {
+    if (!points || points.length < 2) return null
+    const vals = points.map(p => p.revenue_yoy ?? 0)
+    const min = Math.min(...vals, 0)
+    const max = Math.max(...vals, 0)
+    const range = max - min || 1
+    const w = 56, h = 22, pad = 2
+    const x = (i: number) => pad + (i / (vals.length - 1)) * (w - pad * 2)
+    const y = (v: number) => h - pad - ((v - min) / range) * (h - pad * 2)
+    const pts = vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')
+    const lastVal = vals[vals.length - 1]
+    const color = lastVal > 0 ? '#51cf66' : lastVal < 0 ? '#ff6b6b' : '#aaa'
+    const zeroY = y(0)
+    return (
+      <svg width={w} height={h} style={{ display: 'inline-block', verticalAlign: 'middle' }}>
+        {min < 0 && max > 0 && (
+          <line x1={pad} y1={zeroY} x2={w - pad} y2={zeroY} stroke="rgba(255,255,255,0.1)" strokeWidth={0.5} />
+        )}
+        <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
+        <circle cx={x(vals.length - 1)} cy={y(lastVal)} r={2.5} fill={color} />
+      </svg>
+    )
+  }
 
   // ── 重大訊息 modal ────────────────────────────────────────────────────────
   interface Announcement { id: number; announce_date: string; subject: string; content: string; source: string }
@@ -727,7 +842,19 @@ function App() {
   // 取得某欄位的 cell 內容
   const renderCell = (s: Stock, key: string): React.ReactNode => {
     switch (key) {
-      case 'symbol':       return <span style={{ color: '#f90', fontWeight: 600 }}>{s.symbol}</span>
+      case 'symbol': return (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+          <span style={{ color: '#f90', fontWeight: 600 }}>{s.symbol}</span>
+          <span style={{ display: 'inline-flex', gap: '3px' }}>
+            <a href={`https://tw.tradingview.com/chart/?symbol=TWSE%3A${s.symbol}`} target="_blank" rel="noreferrer"
+              title="TradingView 技術面" style={{ fontSize: '0.65rem', padding: '1px 5px', background: 'rgba(56,139,253,0.15)', color: '#6ea8fe', border: '1px solid rgba(56,139,253,0.25)', borderRadius: '3px', textDecoration: 'none', lineHeight: 1.5 }}>TV</a>
+            <a href={`https://goodinfo.tw/tw/StockInfo.asp?STOCK_ID=${s.symbol}`} target="_blank" rel="noreferrer"
+              title="Goodinfo 基本面" style={{ fontSize: '0.65rem', padding: '1px 5px', background: 'rgba(81,207,102,0.15)', color: '#69db7c', border: '1px solid rgba(81,207,102,0.25)', borderRadius: '3px', textDecoration: 'none', lineHeight: 1.5 }}>GI</a>
+            <a href={`https://mops.twse.com.tw/mops/web/t05st09?STK_NO=${s.symbol}`} target="_blank" rel="noreferrer"
+              title="MOPS 公開資訊觀測站" style={{ fontSize: '0.65rem', padding: '1px 5px', background: 'rgba(255,193,7,0.15)', color: '#ffd43b', border: '1px solid rgba(255,193,7,0.25)', borderRadius: '3px', textDecoration: 'none', lineHeight: 1.5 }}>MO</a>
+          </span>
+        </span>
+      )
       case 'name':         return (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap' }}>
           <span
@@ -764,7 +891,16 @@ function App() {
       case 'dividend_yield':return <span style={{ color: '#51cf66' }}>{fmt(s.dividend_yield)}</span>
       case 'revenue':      return <span style={{ color: '#ccc' }}>{fmtThousands(s.revenue)}</span>
       case 'net_income':   return <span style={{ color: netIncomeColor(s.net_income) }}>{fmtThousands(s.net_income)}</span>
-      case 'revenue_yoy':  return <span style={{ color: yoyColor(s.revenue_yoy) }}>{fmt(s.revenue_yoy)}</span>
+      case 'revenue_yoy': {
+        const history = sparkData.get(s.symbol)
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+            onMouseEnter={() => fetchRevenueHistory(s.symbol)}>
+            <span style={{ color: yoyColor(s.revenue_yoy) }}>{fmt(s.revenue_yoy)}</span>
+            {history && history.length >= 2 && renderSparkline(history)}
+          </span>
+        )
+      }
       case 'revenue_mom':  return <span style={{ color: yoyColor(s.revenue_mom) }}>{fmt(s.revenue_mom)}</span>
       case 'revenue_note': return <span style={{ color: '#aaa', fontSize: '0.8rem', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }} title={s.revenue_note ?? ''}>{s.revenue_note ?? '—'}</span>
       case 'foreign_net_buy':         return <span style={{ color: instColor(s.foreign_net_buy) }}>{fmtInt(s.foreign_net_buy)}</span>
@@ -777,7 +913,43 @@ function App() {
       case 'roa':             return <span style={{ color: '#ccc' }}>{fmt(s.roa)}</span>
       case 'debt_ratio':          return <span style={{ color: '#ccc' }}>{fmt(s.debt_ratio)}</span>
       case 'inventory_turnover':  return <span style={{ color: s.inventory_turnover != null && Number(s.inventory_turnover) >= 4 ? '#51cf66' : '#ccc' }}>{s.inventory_turnover != null ? fmt(s.inventory_turnover, 1) + ' 次' : '--'}</span>
-      case 'margin_long':     return <span style={{ color: s.margin_long != null && s.margin_long > 0 ? '#ffc107' : '#aaa' }}>{fmtInt(s.margin_long)}</span>
+      case 'core_profit_ratio': {
+        const v = s.core_profit_ratio != null ? Number(s.core_profit_ratio) : null
+        const color = v == null ? '#aaa' : v >= 80 ? '#51cf66' : v >= 60 ? '#ffd43b' : '#ff6b6b'
+        return <span style={{ color }}>{v != null ? v.toFixed(1) + '%' : '--'}</span>
+      }
+      case 'roe_quality': return (
+        s.roe_quality
+          ? <span style={{ fontSize: '0.75rem', padding: '2px 7px', background: 'rgba(255,215,0,0.15)', color: '#ffd43b', border: '1px solid rgba(255,215,0,0.3)', borderRadius: '4px' }}>🏆品質</span>
+          : <span style={{ color: '#444' }}>--</span>
+      )
+      case 'foreign_consecutive_days': {
+        const d = s.foreign_consecutive_days
+        if (d == null) return <span style={{ color: '#444' }}>--</span>
+        const isBuy = d > 0
+        const abs = Math.abs(d)
+        const intensity = Math.min(abs / 10, 1)
+        const baseColor = isBuy ? `rgba(81,207,102,${0.3 + intensity * 0.7})` : `rgba(255,107,107,${0.3 + intensity * 0.7})`
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', padding: '2px 7px', background: isBuy ? 'rgba(81,207,102,0.12)' : 'rgba(255,107,107,0.12)', borderRadius: '4px', color: baseColor, fontWeight: abs >= 5 ? 700 : 400, fontSize: '0.83rem' }}>
+            {isBuy ? '▲' : '▼'}{abs}天
+          </span>
+        )
+      }
+      case 'margin_long': {
+        const surge = s.margin_surge
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+            <span style={{ color: s.margin_long != null && s.margin_long > 0 ? '#ffc107' : '#aaa' }}>{fmtInt(s.margin_long)}</span>
+            {surge && <span style={{ fontSize: '0.68rem', padding: '1px 5px', background: 'rgba(255,107,107,0.2)', color: '#ff6b6b', border: '1px solid rgba(255,107,107,0.4)', borderRadius: '3px' }}>急增⚠</span>}
+          </span>
+        )
+      }
+      case 'margin_long_chg_pct': {
+        const v = s.margin_long_chg_pct != null ? Number(s.margin_long_chg_pct) : null
+        const isSurge = v != null && v >= 20
+        return <span style={{ color: v == null ? '#aaa' : isSurge ? '#ff6b6b' : v > 0 ? '#ffc107' : '#51cf66', fontWeight: isSurge ? 700 : 400 }}>{v != null ? (v > 0 ? '+' : '') + v.toFixed(1) + '%' : '--'}</span>
+      }
       case 'margin_short':    return <span style={{ color: s.margin_short != null && s.margin_short > 0 ? '#ff6b6b' : '#aaa' }}>{fmtInt(s.margin_short)}</span>
       case 'ex_dividend_date':   return <span style={{ color: '#51cf66', fontSize: '0.83rem' }}>{s.ex_dividend_date || '--'}</span>
       case 'cash_dividend':      return <span style={{ color: '#51cf66' }}>{fmt(s.cash_dividend, 2)}</span>
@@ -841,12 +1013,67 @@ function App() {
 
   return (
     <div className="app">
-      <header className="app-header">
-        <h1>🚀 台股觀測站</h1>
-        <p>台灣股票市場監測和投資組合管理平台</p>
+      <header className="app-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+        <div>
+          <h1>🚀 台股觀測站</h1>
+          <p>台灣股票市場監測和投資組合管理平台</p>
+        </div>
+        <button
+          onClick={() => setShowGuide(g => !g)}
+          style={{
+            padding: '7px 16px',
+            background: showGuide ? 'rgba(255,153,0,0.2)' : 'rgba(255,255,255,0.08)',
+            color: showGuide ? '#f90' : '#aaa',
+            border: `1px solid ${showGuide ? 'rgba(255,153,0,0.4)' : 'rgba(255,255,255,0.15)'}`,
+            borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem',
+          }}>
+          📖 選股七大面向
+        </button>
       </header>
 
       <main className="app-main">
+
+        {/* ── 七大面向說明頁 ── */}
+        {showGuide && (
+          <div style={{ marginBottom: '1.5rem', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,153,0,0.2)', borderRadius: '12px', padding: '1.25rem 1.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <span style={{ color: '#f90', fontWeight: 600, fontSize: '1rem' }}>主動選股七大面向指南</span>
+              <span style={{ color: '#555', fontSize: '0.78rem' }}>建立多維度確認系統・提高勝率</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
+              {[
+                { num: '1', title: '基本面', subtitle: '看錢怎麼賺、流去哪', color: '#51cf66', items: ['ROE 連續 3 年 > 15%（效率，非槓桿虛胖）', '自由現金流長期為正（造血能力）', '本業收入佔比 > 80%（EPS 純度）', '利息保障倍數 > 個位數（還債底氣）', '營益率走勢向上（裡子，照妖鏡）'], sources: ['MOPS', 'Goodinfo', 'CMoney', '財報狗'] },
+                { num: '2', title: '技術面', subtitle: '找買點，抓趨勢', color: '#6495ed', items: ['MACD 背離判斷動能衰竭', '布林通道找極端進場點', '均線多頭排列，縮量拉回買', '帶量突破壓力區'], sources: ['TradingView', 'XQ全球贏家', 'CMoney K線'] },
+                { num: '3', title: '籌碼面', subtitle: '看主力動向', color: '#ffd43b', items: ['籌碼集中度上升＋家數差為負', '大股東持股穩定增加', '特定分點券商節奏追蹤', '外資連續 2-3 週買超趨勢'], sources: ['Goodinfo', 'CMoney 籌碼K線', '玩股網'] },
+                { num: '4', title: '總體經濟面', subtitle: '決定持股水位', color: '#cc5de8', items: ['景氣燈號：綠燈↑ 藍燈↓（上方儀表板）', '美債10Y：快速升壓縮本益比（上方）', 'VIX 恐慌指數：極端值是撿屍機會（上方）', '台幣匯率：升值代表外資流入（上方）'], sources: ['國發會', 'Investing.com', 'TradingView', '央行'] },
+                { num: '5', title: '產業面', subtitle: '找領先訊號', color: '#ff922b', items: ['存貨周轉天數↓代表需求強勁', 'BB Ratio > 1 半導體訂單擴張', '合約負債逐季上升（在手訂單能見度）', '月營收年增率連續 3-6 月趨勢（本站 Sparkline）', '龍頭先動才是真循環'], sources: ['MOPS', 'Goodinfo', 'SEMI 官網', '財報狗'] },
+                { num: '6', title: '市場情緒與資金面', subtitle: '反向指標是好朋友', color: '#f03e3e', items: ['融資暴增 = 散戶追價，波段末段警訊（本站⚠️）', '融資斷頭殺出 = 籌碼清洗機會', '外資連續 2-3 週買超趨勢（本站▲▼天）', '外資買超但大盤不漲 = 內資倒貨警惕'], sources: ['Goodinfo', 'CMoney', 'TWSE'] },
+                { num: '7', title: '風控', subtitle: '活下來最重要', color: '#868e96', items: ['跌破買進理由，立刻砍單', '研究越深越危險：反問「誰在賣給我？」', '停損紀律 > 部位控管 > 風報比', '90% 指數（0050）+ 10% 個股配置'], sources: [] },
+              ].map(dim => (
+                <div key={dim.num} style={{ background: 'rgba(255,255,255,0.04)', border: `1px solid rgba(255,255,255,0.08)`, borderRadius: '10px', padding: '0.85rem 1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <span style={{ width: '22px', height: '22px', borderRadius: '50%', background: dim.color + '33', border: `1px solid ${dim.color}66`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.72rem', color: dim.color, fontWeight: 700, flexShrink: 0 }}>{dim.num}</span>
+                    <span style={{ color: dim.color, fontWeight: 600, fontSize: '0.9rem' }}>{dim.title}</span>
+                    <span style={{ color: '#555', fontSize: '0.73rem' }}>{dim.subtitle}</span>
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: '14px', listStyle: 'none' }}>
+                    {dim.items.map((item, i) => (
+                      <li key={i} style={{ fontSize: '0.77rem', color: '#888', lineHeight: 1.6, paddingLeft: '6px', position: 'relative' }}>
+                        <span style={{ position: 'absolute', left: '-6px', color: dim.color + '88' }}>•</span>
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                  {dim.sources.length > 0 && (
+                    <div style={{ marginTop: '8px', fontSize: '0.7rem', color: '#444' }}>
+                      資料來源：{dim.sources.join('・')}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* ── 大盤指數顯示專區 ── */}
         <div style={{
@@ -895,6 +1122,80 @@ function App() {
                 )
               })
           }
+        </div>
+
+        {/* ── 總體經濟儀表板 ── */}
+        <div style={{ marginBottom: '1.25rem' }}>
+          <div style={{ fontSize: '0.73rem', color: '#555', marginBottom: '0.5rem', letterSpacing: '0.04em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>📊 總體經濟面</span>
+            <span style={{ color: '#444' }}>—</span>
+            <span style={{ color: '#444' }}>決定持股水位的四大參考指標</span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem' }}>
+            {macroLoading
+              ? [1,2,3,4].map(i => (
+                  <div key={i} style={{
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                    borderRadius: '12px', padding: '14px 18px',
+                    minHeight: '82px', animation: 'pulse 1.5s infinite',
+                  }} />
+                ))
+              : macroIndicators.map((ind) => {
+                  const isBCSI = ind.code === 'BCSI'
+                  const isUSDTWD = ind.code === 'USDTWD'
+                  const chg = ind.change ?? 0
+                  // 台幣匯率：數值下降（台幣升值）= 利多 → 綠色
+                  const isPositive = isUSDTWD ? chg < 0 : chg > 0
+                  const isNegative = isUSDTWD ? chg > 0 : chg < 0
+                  const color = isBCSI ? '#9ca3af' : isPositive ? '#4ade80' : isNegative ? '#f87171' : '#9ca3af'
+                  const borderColor = isBCSI ? 'rgba(255,255,255,0.08)' : isPositive ? 'rgba(74,222,128,0.2)' : isNegative ? 'rgba(248,113,113,0.2)' : 'rgba(255,255,255,0.08)'
+                  const bgColor = isBCSI ? 'rgba(255,255,255,0.03)' : isPositive ? 'rgba(74,222,128,0.06)' : isNegative ? 'rgba(248,113,113,0.06)' : 'rgba(255,255,255,0.03)'
+                  const sign = (ind.change ?? 0) > 0 ? '+' : ''
+                  const decimals = ind.code === 'USDTWD' ? 3 : ind.code === 'US10Y' ? 3 : 2
+                  return (
+                    <div key={ind.code} style={{
+                      background: bgColor,
+                      border: `1px solid ${borderColor}`,
+                      borderRadius: '12px', padding: '14px 18px',
+                      display: 'flex', flexDirection: 'column', gap: '4px',
+                    }}>
+                      <div style={{ fontSize: '0.75rem', color: '#9ca3af', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        {ind.name}
+                        {ind.unit && !isBCSI && (
+                          <span style={{ opacity: 0.5, fontSize: '0.68rem' }}>({ind.unit})</span>
+                        )}
+                      </div>
+                      {isBCSI ? (
+                        <>
+                          <div style={{ fontSize: '0.82rem', color: '#555', margin: '2px 0' }}>每月更新，點擊查看</div>
+                          {ind.link && (
+                            <a href={ind.link} target="_blank" rel="noreferrer"
+                              style={{ fontSize: '0.8rem', color: '#6495ed', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                              🔗 國發會景氣燈號 →
+                            </a>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: '1.5rem', fontWeight: 700, color: '#fff', lineHeight: 1.15 }}>
+                            {ind.price != null ? ind.price.toFixed(decimals) : '---'}
+                          </div>
+                          <div style={{ fontSize: '0.82rem', color, fontWeight: 600 }}>
+                            {ind.change != null
+                              ? `${sign}${ind.change.toFixed(decimals)}　${sign}${ind.change_pct?.toFixed(2)}%`
+                              : '---'}
+                          </div>
+                        </>
+                      )}
+                      {ind.hint && (
+                        <div style={{ fontSize: '0.7rem', color: '#444', marginTop: '1px' }}>{ind.hint}</div>
+                      )}
+                    </div>
+                  )
+                })
+            }
+          </div>
         </div>
 
         {/* ── 搜尋列 + 市場 / 產業篩選 + 欄位開關 ── */}
@@ -1050,16 +1351,25 @@ function App() {
         ) : (
           <>
             <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: '0.9rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
                 <thead>
-                  <tr style={{ background: 'rgba(255,255,255,0.08)' }}>
-                    {visibleCols.map(({ label, key }) => (
-                      <th key={key} onClick={() => handleSort(key)}
-                        title="點擊排序（僅限本頁）"
-                        style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 500, cursor: 'pointer', userSelect: 'none', color: sortKey === key ? '#f90' : '#ccc' }}>
-                        {label} {sortKey === key ? (sortDir === 'asc' ? '↑' : '↓') : ''}
-                      </th>
-                    ))}
+                  <tr style={{ background: '#1e1e38' }}>
+                    {visibleCols.map(({ label, key }, colIdx) => {
+                      const isSymbol = key === 'symbol'
+                      const isName   = key === 'name'
+                      const stickyStyle: React.CSSProperties = isSymbol
+                        ? { position: 'sticky', left: 0, zIndex: 3, background: '#1e1e38', minWidth: 130, boxShadow: isName ? undefined : '2px 0 4px rgba(0,0,0,0.4)' }
+                        : isName
+                        ? { position: 'sticky', left: 130, zIndex: 3, background: '#1e1e38', minWidth: 100, boxShadow: '2px 0 4px rgba(0,0,0,0.4)' }
+                        : {}
+                      return (
+                        <th key={key} onClick={() => handleSort(key)}
+                          title="點擊排序（僅限本頁）"
+                          style={{ padding: '10px 12px', textAlign: isSymbol || isName ? 'left' : 'right', whiteSpace: 'nowrap', fontWeight: 500, cursor: 'pointer', userSelect: 'none', color: sortKey === key ? '#f90' : '#ccc', borderBottom: '1px solid rgba(255,255,255,0.08)', ...stickyStyle }}>
+                          {label} {sortKey === key ? (sortDir === 'asc' ? '↑' : '↓') : ''}
+                        </th>
+                      )
+                    })}
                   </tr>
                 </thead>
                 <tbody>
@@ -1077,15 +1387,27 @@ function App() {
                       </td>
                     </tr>
                   )}
-                  {displayedStocks.map((s, i) => (
-                    <tr key={s.symbol} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                      {visibleCols.map(({ key }) => (
-                        <td key={key} style={{ padding: '8px 12px', textAlign: key === 'symbol' || key === 'name' || key === 'market_type' || key === 'sector' ? 'left' : 'right' }}>
-                          {renderCell(s, key)}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
+                  {displayedStocks.map((s, i) => {
+                    const rowBg = i % 2 === 0 ? '#16213e' : '#1a1a32'
+                    return (
+                      <tr key={s.symbol} style={{ background: rowBg }}>
+                        {visibleCols.map(({ key }) => {
+                          const isSymbol = key === 'symbol'
+                          const isName   = key === 'name'
+                          const stickyStyle: React.CSSProperties = isSymbol
+                            ? { position: 'sticky', left: 0, zIndex: 2, background: rowBg, boxShadow: '2px 0 4px rgba(0,0,0,0.3)' }
+                            : isName
+                            ? { position: 'sticky', left: 130, zIndex: 2, background: rowBg, boxShadow: '2px 0 4px rgba(0,0,0,0.3)' }
+                            : {}
+                          return (
+                            <td key={key} style={{ padding: '8px 12px', textAlign: isSymbol || isName || key === 'market_type' || key === 'sector' ? 'left' : 'right', borderBottom: '1px solid rgba(255,255,255,0.05)', whiteSpace: 'nowrap', ...stickyStyle }}>
+                              {renderCell(s, key)}
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
