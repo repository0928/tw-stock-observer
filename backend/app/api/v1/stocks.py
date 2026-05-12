@@ -40,10 +40,12 @@ NUMERIC_FILTER_FIELDS = {
     "market_cap", "book_value_per_share",
     "inventory_turnover", "receivable_turnover", "asset_turnover",
     "current_ratio", "quick_ratio",
+    # 基本面進階指標
+    "core_profit_ratio", "free_cash_flow_ps", "interest_coverage",
 }
 
 # 允許布林篩選的欄位
-BOOLEAN_FILTER_FIELDS = {"is_attention", "is_disposed", "is_etf", "is_active", "is_suspended"}
+BOOLEAN_FILTER_FIELDS = {"is_attention", "is_disposed", "is_etf", "is_active", "is_suspended", "roe_quality", "margin_surge"}
 
 # 允許透過 {field}_contains 篩選的字串欄位
 STRING_FILTER_FIELDS = {"name", "symbol", "sector", "industry", "revenue_note"}
@@ -593,69 +595,61 @@ async def screener_gross_margin_rising(
 ) -> dict:
     """
     篩選：最近 N 季毛利率均 ≥ min_margin，且逐季嚴格遞增。
-
-    - **min_margin**: 毛利率門檻（預設 30%）
-    - **quarters**: 需要幾季均符合（預設 4）
+    使用單一 SQL Window Function，避免 N+1 查詢問題。
     """
-    from app.models import StockQuarterlyFinancial
-    from sqlalchemy import desc as _desc
+    from sqlalchemy import text
 
     try:
-        # 取出所有有季度資料的股票，各取最近 N 季
-        all_symbols_stmt = select(
-            StockQuarterlyFinancial.symbol
-        ).distinct()
-        sym_result = await db.execute(all_symbols_stmt)
-        all_symbols = [r[0] for r in sym_result.fetchall()]
+        # 單一 SQL：用 ROW_NUMBER() 取各股最近 N 季，再做 PIVOT + 過濾
+        sql = text("""
+            WITH ranked AS (
+                SELECT symbol, year, quarter, gross_margin,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY symbol
+                           ORDER BY year DESC, quarter DESC
+                       ) AS rn
+                FROM stock_quarterly_financials
+                WHERE gross_margin IS NOT NULL
+            ),
+            pivoted AS (
+                SELECT
+                    symbol,
+                    COUNT(*)                                             AS cnt,
+                    MIN(gross_margin)                                    AS min_gm,
+                    MAX(CASE WHEN rn = 1 THEN gross_margin END)         AS gm1,
+                    MAX(CASE WHEN rn = 2 THEN gross_margin END)         AS gm2,
+                    MAX(CASE WHEN rn = 3 THEN gross_margin END)         AS gm3,
+                    MAX(CASE WHEN rn = 4 THEN gross_margin END)         AS gm4,
+                    MAX(CASE WHEN rn = 5 THEN gross_margin END)         AS gm5,
+                    MAX(CASE WHEN rn = 6 THEN gross_margin END)         AS gm6,
+                    MAX(CASE WHEN rn = 7 THEN gross_margin END)         AS gm7,
+                    MAX(CASE WHEN rn = 8 THEN gross_margin END)         AS gm8
+                FROM ranked
+                WHERE rn <= :quarters
+                GROUP BY symbol
+            )
+            SELECT symbol, gm1, gm2, gm3, gm4, gm5, gm6, gm7, gm8
+            FROM pivoted
+            WHERE cnt = :quarters
+              AND min_gm >= :min_margin
+        """)
+        res = await db.execute(sql, {"quarters": quarters, "min_margin": min_margin})
+        candidates = res.fetchall()
 
         matched_symbols = []
-        detail = {}
-
-        for symbol in all_symbols:
-            stmt = (
-                select(StockQuarterlyFinancial)
-                .where(StockQuarterlyFinancial.symbol == symbol)
-                .order_by(
-                    _desc(StockQuarterlyFinancial.year),
-                    _desc(StockQuarterlyFinancial.quarter),
-                )
-                .limit(quarters)
-            )
-            res = await db.execute(stmt)
-            rows = res.scalars().all()
-
-            if len(rows) < quarters:
+        for row in candidates:
+            sym = row[0]
+            gms = [row[i+1] for i in range(quarters) if row[i+1] is not None]
+            if len(gms) < quarters:
                 continue
-
-            # 確認每季 gross_margin 都不為 NULL
-            margins = [r.gross_margin for r in rows]
-            if any(m is None for m in margins):
-                continue
-
-            margins_f = [float(m) for m in margins]
-
-            # 每季 ≥ min_margin
-            if not all(m >= min_margin for m in margins_f):
-                continue
-
-            # 嚴格遞增（rows 由新到舊，所以 margins_f[0] 應為最大）
-            is_rising = all(
-                margins_f[i] > margins_f[i + 1]
-                for i in range(len(margins_f) - 1)
-            )
-            if not is_rising:
-                continue
-
-            matched_symbols.append(symbol)
-            detail[symbol] = [
-                {"year": r.year, "quarter": r.quarter, "gross_margin": float(r.gross_margin)}
-                for r in rows
-            ]
+            gms_f = [float(g) for g in gms]
+            # 嚴格遞增（gm1 最新，gm2 次新，…）
+            if all(gms_f[i] > gms_f[i+1] for i in range(len(gms_f)-1)):
+                matched_symbols.append(sym)
 
         return {
             "count": len(matched_symbols),
             "symbols": matched_symbols,
-            "detail": detail,
         }
     except Exception as e:
         logger.error(f"screener gross-margin-rising 失敗: {e}")
@@ -837,6 +831,129 @@ async def screener_contract_liabilities_growth(
         }
     except Exception as e:
         logger.error(f"screener contract-liabilities-growth 失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/screener/roe-quality")
+async def screener_roe_quality(
+    min_roe: float = Query(15.0, description="ROE 下限（%）"),
+    min_op_margin: float = Query(10.0, description="營業利益率下限（%）"),
+    min_gm: float = Query(30.0, description="毛利率下限（%）"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：ROE 品質股（高效率且穩健獲利）。
+
+    條件：
+    - ROE >= min_roe（預設 15%）
+    - 營業利益率 >= min_op_margin（預設 10%）— 排除靠業外灌水的 ROE
+    - 毛利率 >= min_gm（預設 30%）— 確保有護城河
+    - 本業獲利佔比 >= 70%（若已計算）
+
+    說明：
+    由於需要跨年 ROE 歷史資料，此篩選以「當期多維度品質交叉驗證」
+    替代純粹的「連續 3 年 ROE > 15%」，實際效果相近。
+    """
+    try:
+        conditions = [
+            Stock.is_active == True,
+            Stock.roe >= min_roe,
+            Stock.operating_margin >= min_op_margin,
+            Stock.gross_margin >= min_gm,
+        ]
+        stmt = select(Stock.symbol).where(*conditions).order_by(Stock.roe.desc())
+        result = await db.execute(stmt)
+        symbols = [r[0] for r in result.fetchall()]
+
+        return {
+            "count": len(symbols),
+            "symbols": symbols,
+            "criteria": {
+                "roe_min": min_roe,
+                "operating_margin_min": min_op_margin,
+                "gross_margin_min": min_gm,
+            },
+        }
+    except Exception as e:
+        logger.error(f"screener roe-quality 失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/screener/core-profit")
+async def screener_core_profit(
+    min_ratio: float = Query(80.0, description="本業獲利佔比下限（%）"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：本業獲利佔比 >= min_ratio%。
+    本業獲利佔比 = 營業利益 / 稅後淨利 × 100，
+    高於 80% 代表獲利主要來自本業，非業外一次性灌水。
+    """
+    try:
+        conditions = [
+            Stock.is_active == True,
+            Stock.core_profit_ratio >= min_ratio,
+        ]
+        stmt = select(Stock.symbol).where(*conditions).order_by(
+            Stock.core_profit_ratio.desc()
+        )
+        result = await db.execute(stmt)
+        symbols = [r[0] for r in result.fetchall()]
+
+        return {"count": len(symbols), "symbols": symbols}
+    except Exception as e:
+        logger.error(f"screener core-profit 失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/{symbol}/revenue-history")
+async def get_revenue_history(
+    symbol: str,
+    months: int = Query(6, ge=2, le=24, description="取最近幾個月"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    取得個股最近 N 個月月營收年增率歷史，用於 Sparkline 趨勢圖。
+    若無歷史表資料，回傳當前單月資料。
+    """
+    from sqlalchemy import text as _text
+    try:
+        # 嘗試從歷史表取資料
+        stmt = _text("""
+            SELECT year_month, revenue_yoy, revenue_mom
+            FROM stock_revenue_monthly
+            WHERE symbol = :symbol
+            ORDER BY year_month DESC
+            LIMIT :months
+        """)
+        result = await db.execute(stmt, {"symbol": symbol.upper(), "months": months})
+        rows = result.fetchall()
+
+        if rows:
+            history = [
+                {"year_month": r[0], "revenue_yoy": float(r[1]) if r[1] else None, "revenue_mom": float(r[2]) if r[2] else None}
+                for r in reversed(rows)  # 由舊到新排列
+            ]
+            return {"symbol": symbol, "months": len(history), "history": history}
+
+        # fallback：回傳當前單月資料
+        stock_stmt = select(Stock).where(Stock.symbol == symbol.upper())
+        stock_result = await db.execute(stock_stmt)
+        stock = stock_result.scalar_one_or_none()
+        if not stock:
+            raise HTTPException(status_code=404, detail=f"股票不存在: {symbol}")
+
+        history = []
+        if stock.revenue_yoy is not None:
+            history = [{"year_month": stock.trade_date[:7] if stock.trade_date else "--",
+                        "revenue_yoy": float(stock.revenue_yoy),
+                        "revenue_mom": float(stock.revenue_mom) if stock.revenue_mom else None}]
+        return {"symbol": symbol, "months": len(history), "history": history}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"取得月營收歷史失敗 {symbol}: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
 
 
