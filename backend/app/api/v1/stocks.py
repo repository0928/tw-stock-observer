@@ -114,6 +114,7 @@ async def list_stocks(
     sector: Optional[str] = None,
     sort_by: Optional[str] = Query(None, description="排序欄位"),
     sort_order: Optional[str] = Query("desc", pattern="^(asc|desc)$"),
+    symbols: Optional[str] = Query(None, description="逗號分隔的股票代號清單（Screener 白名單過濾）"),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """獲取股票列表
@@ -130,6 +131,10 @@ async def list_stocks(
             conditions.append(Stock.market_type == market_type)
         if sector:
             conditions.append(Stock.sector == sector)
+        if symbols:
+            symbol_list = [s.strip() for s in symbols.split(',') if s.strip()]
+            if symbol_list:
+                conditions.append(Stock.symbol.in_(symbol_list))
 
         # ── 通用篩選解析 ──────────────────────────────────────────
         params = dict(request.query_params)

@@ -482,16 +482,37 @@ function App() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       const symbols: string[] = data.symbols || []
-      setScreenerMap(prev => {
-        const next = new Map(prev)
-        next.set(key, new Set(symbols))
-        return next
-      })
+
+      // 更新 screenerMap
+      const nextMap = new Map(screenerMap)
+      nextMap.set(key, new Set(symbols))
+      setScreenerMap(nextMap)
+
+      // 計算所有 screener 的交集
+      let intersection: string[] = symbols
+      for (const [k, symbolSet] of nextMap.entries()) {
+        if (k === key) continue
+        intersection = intersection.filter(s => symbolSet.has(s))
+      }
+
+      // 直接用 symbols 撈後端，不依賴本地分頁的 stocks 陣列
+      if (intersection.length > 0) {
+        const symbolsParam = intersection.join(',')
+        const r2 = await fetch(`${API_URL}/v1/stocks?symbols=${encodeURIComponent(symbolsParam)}&limit=500`)
+        if (r2.ok) {
+          const d2 = await r2.json()
+          setStocks(d2.stocks || [])
+          setTotal(d2.total || d2.stocks?.length || 0)
+        }
+      } else {
+        setStocks([])
+        setTotal(0)
+      }
     } catch (e) {
       console.error(`screener ${endpoint} failed:`, e)
     }
     setScreenerLoading(false)
-  }, [])
+  }, [screenerMap])
 
   // ── 大盤指數 ──────────────────────────────────────────────────────────────
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([])
