@@ -668,87 +668,56 @@ async def screener_net_income_outpace_revenue(
 ) -> dict:
     """
     篩選：淨利年增率 > 營收年增率（利潤率擴張）。
-
-    YoY = (本季值 - 去年同季值) / |去年同季值| × 100
-    每季都需符合 NI_yoy > REV_yoy。
+    使用單一 SQL，自我 JOIN 取得去年同季，避免 N+1 查詢問題。
     """
-    from app.models import StockQuarterlyFinancial
-    from sqlalchemy import desc as _desc
+    from sqlalchemy import text
 
     try:
-        all_symbols_stmt = select(StockQuarterlyFinancial.symbol).distinct()
-        sym_result = await db.execute(all_symbols_stmt)
-        all_symbols = [r[0] for r in sym_result.fetchall()]
-
-        matched_symbols = []
-        detail = {}
-
-        for symbol in all_symbols:
-            # 取最近 quarters+4 季（多取 4 季供 YoY 對比）
-            stmt = (
-                select(StockQuarterlyFinancial)
-                .where(StockQuarterlyFinancial.symbol == symbol)
-                .order_by(
-                    _desc(StockQuarterlyFinancial.year),
-                    _desc(StockQuarterlyFinancial.quarter),
-                )
-                .limit(quarters + 4)
+        # 單一 SQL：self-join 取各股最新 N 季及去年同季，計算 YoY 並比較
+        sql = text("""
+            WITH ranked AS (
+                SELECT symbol, year, quarter, net_income, revenue,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY symbol
+                           ORDER BY year DESC, quarter DESC
+                       ) AS rn
+                FROM stock_quarterly_financials
+                WHERE net_income IS NOT NULL AND revenue IS NOT NULL
+            ),
+            recent AS (
+                SELECT r.symbol, r.year, r.quarter, r.net_income, r.revenue, r.rn,
+                       p.net_income AS prev_ni, p.revenue AS prev_rev
+                FROM ranked r
+                JOIN stock_quarterly_financials p
+                  ON p.symbol = r.symbol
+                 AND p.year   = r.year - 1
+                 AND p.quarter = r.quarter
+                 AND p.net_income IS NOT NULL
+                 AND p.revenue IS NOT NULL
+                WHERE r.rn <= :quarters
+                  AND p.net_income <> 0
+                  AND p.revenue    <> 0
+            ),
+            check_pass AS (
+                SELECT symbol,
+                       COUNT(*) AS matched_qtrs,
+                       BOOL_AND(
+                           (r.net_income - r.prev_ni) / ABS(r.prev_ni)
+                           > (r.revenue - r.prev_rev) / ABS(r.prev_rev)
+                       ) AS all_pass
+                FROM recent r
+                GROUP BY symbol
             )
-            res = await db.execute(stmt)
-            rows = res.scalars().all()
-
-            if len(rows) < quarters + 4:
-                continue
-
-            # 建立 (year, quarter) → row 的查找表
-            row_map = {(r.year, r.quarter): r for r in rows}
-
-            # 驗證最新 quarters 季
-            recent = rows[:quarters]
-            q_results = []
-            all_pass = True
-
-            for row in recent:
-                # 去年同季
-                yoy_year = row.year - 1
-                yoy_key = (yoy_year, row.quarter)
-                prev_row = row_map.get(yoy_key)
-                if prev_row is None:
-                    all_pass = False
-                    break
-
-                if (row.net_income is None or prev_row.net_income is None or
-                        row.revenue is None or prev_row.revenue is None):
-                    all_pass = False
-                    break
-
-                prev_ni = float(prev_row.net_income)
-                prev_rev = float(prev_row.revenue)
-                if prev_ni == 0 or prev_rev == 0:
-                    all_pass = False
-                    break
-
-                ni_yoy = (float(row.net_income) - prev_ni) / abs(prev_ni) * 100
-                rev_yoy = (float(row.revenue) - prev_rev) / abs(prev_rev) * 100
-
-                if ni_yoy <= rev_yoy:
-                    all_pass = False
-                    break
-
-                q_results.append({
-                    "year": row.year, "quarter": row.quarter,
-                    "ni_yoy": round(ni_yoy, 2),
-                    "rev_yoy": round(rev_yoy, 2),
-                })
-
-            if all_pass and q_results:
-                matched_symbols.append(symbol)
-                detail[symbol] = q_results
+            SELECT symbol
+            FROM check_pass
+            WHERE matched_qtrs = :quarters AND all_pass = TRUE
+        """)
+        res = await db.execute(sql, {"quarters": quarters})
+        matched_symbols = [row[0] for row in res.fetchall()]
 
         return {
             "count": len(matched_symbols),
             "symbols": matched_symbols,
-            "detail": detail,
         }
     except Exception as e:
         logger.error(f"screener net-income-outpace-revenue 失敗: {e}")
@@ -763,76 +732,72 @@ async def screener_contract_liabilities_growth(
 ) -> dict:
     """
     篩選：合約負債「連續 N 季增加（條件 A）」OR「單季 QoQ ≥ min_qoq_pct%（條件 B）」。
-    符合其中一項即入選。無合約負債資料的股票自動排除。
+    使用單一 SQL Window Function，避免 N+1 查詢問題。
     """
-    from app.models import StockQuarterlyFinancial
-    from sqlalchemy import desc as _desc
+    from sqlalchemy import text
 
     try:
-        all_symbols_stmt = select(StockQuarterlyFinancial.symbol).distinct()
-        sym_result = await db.execute(all_symbols_stmt)
-        all_symbols = [r[0] for r in sym_result.fetchall()]
+        need = consecutive + 1  # 連續判斷需多取 1 季作為起始基準
+
+        sql = text("""
+            WITH ranked AS (
+                SELECT symbol, year, quarter, contract_liabilities,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY symbol
+                           ORDER BY year DESC, quarter DESC
+                       ) AS rn
+                FROM stock_quarterly_financials
+                WHERE contract_liabilities IS NOT NULL
+            ),
+            pivoted AS (
+                SELECT
+                    symbol,
+                    COUNT(*)                                                     AS cnt,
+                    MAX(CASE WHEN rn = 1 THEN contract_liabilities END)          AS cl1,
+                    MAX(CASE WHEN rn = 2 THEN contract_liabilities END)          AS cl2,
+                    MAX(CASE WHEN rn = 3 THEN contract_liabilities END)          AS cl3,
+                    MAX(CASE WHEN rn = 4 THEN contract_liabilities END)          AS cl4,
+                    MAX(CASE WHEN rn = 5 THEN contract_liabilities END)          AS cl5,
+                    MAX(CASE WHEN rn = 6 THEN contract_liabilities END)          AS cl6,
+                    MAX(CASE WHEN rn = 7 THEN contract_liabilities END)          AS cl7,
+                    MAX(CASE WHEN rn = 8 THEN contract_liabilities END)          AS cl8,
+                    MAX(CASE WHEN rn = 9 THEN contract_liabilities END)          AS cl9
+                FROM ranked
+                WHERE rn <= :need
+                GROUP BY symbol
+            )
+            SELECT symbol, cl1, cl2, cl3, cl4, cl5, cl6, cl7, cl8, cl9
+            FROM pivoted
+            WHERE cnt >= 2 AND cl1 IS NOT NULL AND cl2 IS NOT NULL
+        """)
+        res = await db.execute(sql, {"need": need})
+        candidates = res.fetchall()
 
         matched_symbols = []
-        detail = {}
-
-        for symbol in all_symbols:
-            need = max(consecutive + 1, 2)  # 連續判斷需多取 1 季作為起始基準
-            stmt = (
-                select(StockQuarterlyFinancial)
-                .where(
-                    StockQuarterlyFinancial.symbol == symbol,
-                    StockQuarterlyFinancial.contract_liabilities.is_not(None),
-                )
-                .order_by(
-                    _desc(StockQuarterlyFinancial.year),
-                    _desc(StockQuarterlyFinancial.quarter),
-                )
-                .limit(need)
-            )
-            res = await db.execute(stmt)
-            rows = res.scalars().all()
-
-            # 沒有合約負債資料 → 排除
-            if len(rows) < 2:
+        for row in candidates:
+            sym = row[0]
+            # collect available cl values (cl1=newest)
+            cl_vals = [float(row[i+1]) for i in range(need) if row[i+1] is not None]
+            if len(cl_vals) < 2:
                 continue
 
-            cl_values = [float(r.contract_liabilities) for r in rows]  # 由新到舊
+            # 條件 B：最新一季 QoQ ≥ min_qoq_pct
+            cond_b = False
+            if cl_vals[1] != 0:
+                qoq = (cl_vals[0] - cl_vals[1]) / abs(cl_vals[1]) * 100
+                cond_b = qoq >= min_qoq_pct
 
-            # 條件 B：最新一季 QoQ
-            latest_qoq = None
-            if cl_values[1] and cl_values[1] != 0:
-                latest_qoq = (cl_values[0] - cl_values[1]) / abs(cl_values[1]) * 100
-
-            cond_b = latest_qoq is not None and latest_qoq >= min_qoq_pct
-
-            # 條件 A：連續 consecutive 季增加
+            # 條件 A：連續 consecutive 季嚴格遞增
             cond_a = False
-            if len(rows) >= consecutive + 1:
-                cond_a = all(
-                    cl_values[i] > cl_values[i + 1]
-                    for i in range(consecutive)
-                )
+            if len(cl_vals) >= consecutive + 1:
+                cond_a = all(cl_vals[i] > cl_vals[i+1] for i in range(consecutive))
 
-            if not (cond_a or cond_b):
-                continue
-
-            matched_symbols.append(symbol)
-            detail[symbol] = [
-                {
-                    "year": r.year, "quarter": r.quarter,
-                    "contract_liabilities": int(r.contract_liabilities),
-                    "qoq_pct": round(
-                        (cl_values[j] - cl_values[j + 1]) / abs(cl_values[j + 1]) * 100, 2
-                    ) if j + 1 < len(cl_values) and cl_values[j + 1] != 0 else None,
-                }
-                for j, r in enumerate(rows)
-            ]
+            if cond_a or cond_b:
+                matched_symbols.append(sym)
 
         return {
             "count": len(matched_symbols),
             "symbols": matched_symbols,
-            "detail": detail,
         }
     except Exception as e:
         logger.error(f"screener contract-liabilities-growth 失敗: {e}")
