@@ -104,9 +104,9 @@ for _url in OTC_QUOTE_URLS:
             if isinstance(data2, dict):
                 otc_date = data2.get("date", data2.get("Date", ""))
             print(f"  使用 URL: {_url}，共 {len(otc_items)} 筆")
-            # 印出第一筆的 keys 供診斷
-            if otc_items:
-                print(f"  欄位: {list(otc_items[0].keys())[:10]}")
+            # 印出前兩筆供診斷（含 Date 格式與 TradingShares 值）
+            for _dbg in otc_items[:2]:
+                print(f"  [範例] {_dbg.get('SecuritiesCompanyCode')} Date={_dbg.get('Date')} TradingShares={_dbg.get('TradingShares')}")
             break
         else:
             print(f"  {_url} -> 空資料")
@@ -161,9 +161,13 @@ for item in otc_items:
         else:
             turnover_rate = None
 
-        # 日期：優先用 API 提供的，否則用今日
-        item_date = item.get("Date") or item.get("date") or otc_date
-        trade_date_val = item_date if item_date else datetime.now().strftime("%Y/%m/%d")
+        # 日期：TPEx 格式為民國年無分隔符 YYYMMDD（如 1150512）
+        # 轉換為 YYYY-MM-DD（如 2026-05-12）
+        item_date = str(item.get("Date") or item.get("date") or otc_date).strip()
+        if item_date and len(item_date) == 7 and item_date.isdigit():
+            roc_y = int(item_date[:3])
+            item_date = f"{roc_y + 1911}-{item_date[3:5]}-{item_date[5:7]}"
+        trade_date_val = item_date if item_date else datetime.now().strftime("%Y-%m-%d")
 
         cur.execute("""
             UPDATE stocks SET
