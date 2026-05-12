@@ -474,6 +474,8 @@ function App() {
   // ── Screener 狀態（symbol 白名單篩選） ────────────────────────────────────
   const [screenerMap, setScreenerMap] = useState<Map<QuickFilterKey, Set<string>>>(new Map())
   const [screenerLoading, setScreenerLoading] = useState(false)
+  // 目前 screener 交集後的 symbol 清單（空陣列代表無 screener 啟用）
+  const [screenerSymbols, setScreenerSymbols] = useState<string[]>([])
 
   const fetchScreenerResults = useCallback(async (key: QuickFilterKey, endpoint: string) => {
     setScreenerLoading(true)
@@ -495,7 +497,9 @@ function App() {
         intersection = intersection.filter(s => symbolSet.has(s))
       }
 
-      // 直接用 symbols 撈後端，不依賴本地分頁的 stocks 陣列
+      // 儲存交集清單供排序/換頁時使用
+      setScreenerSymbols(intersection)
+
       if (intersection.length > 0) {
         const symbolsParam = intersection.join(',')
         const r2 = await fetch(`${API_URL}/v1/stocks?symbols=${encodeURIComponent(symbolsParam)}&limit=500`)
@@ -670,6 +674,7 @@ function App() {
     conditions: FilterCondition[] = [],
     sby?: string,
     sdir?: 'asc' | 'desc',
+    syms?: string[],  // screener 過濾的 symbol 白名單
   ) => {
     setLoading(true)
     setError(null)
@@ -677,6 +682,13 @@ function App() {
       let url: string
       if (keyword) {
         url = `${API_URL}/v1/stocks/search/${encodeURIComponent(keyword)}`
+      } else if (syms && syms.length > 0) {
+        // Screener 模式：不分頁，直接撈符合的股票，支援排序
+        let base = `${API_URL}/v1/stocks?symbols=${encodeURIComponent(syms.join(','))}&limit=500`
+          + (market ? `&market_type=${encodeURIComponent(market)}` : '')
+          + (sector ? `&sector=${encodeURIComponent(sector)}` : '')
+        if (sby) base += `&sort_by=${sby}&sort_order=${sdir ?? 'desc'}`
+        url = buildUrl(base, conditions)
       } else {
         const skip = (p - 1) * PAGE_SIZE
         let base = `${API_URL}/v1/stocks?skip=${skip}&limit=${PAGE_SIZE}`
@@ -734,7 +746,7 @@ function App() {
 
   const handlePage = (newPage: number) => {
     setPage(newPage)
-    fetchStocks(newPage, '', marketFilter, sectorFilter, getActiveConditions(activeFilters), sortKey || undefined, sortDir)
+    fetchStocks(newPage, '', marketFilter, sectorFilter, getActiveConditions(activeFilters), sortKey || undefined, sortDir, screenerSymbols.length > 0 ? screenerSymbols : undefined)
     window.scrollTo(0, 0)
   }
 
@@ -751,11 +763,19 @@ function App() {
         // 取消：移除篩選，若是 screener key 也清掉 map 裡的 set
         next.delete(key)
         if (isScreenerKey) {
+          let newSS: string[] = []
           setScreenerMap(sm => {
             const nsm = new Map(sm)
             nsm.delete(key)
+            const sets = [...nsm.values()]
+            if (sets.length > 0) {
+              let inter = [...sets[0]]
+              for (let i = 1; i < sets.length; i++) inter = inter.filter(s => sets[i].has(s))
+              newSS = inter
+            }
             return nsm
           })
+          setScreenerSymbols(newSS)
         }
       } else {
         next.add(key)
@@ -775,21 +795,35 @@ function App() {
   }
 
   const handleClearFilter = (key: QuickFilterKey) => {
+    let newScreenerSymbols: string[] = []
     if (SCREENER_ENDPOINT_MAP[key]) {
-      setScreenerMap(sm => { const nsm = new Map(sm); nsm.delete(key); return nsm })
+      setScreenerMap(sm => {
+        const nsm = new Map(sm)
+        nsm.delete(key)
+        // 重新計算交集
+        const sets = [...nsm.values()]
+        if (sets.length > 0) {
+          let inter = [...sets[0]]
+          for (let i = 1; i < sets.length; i++) inter = inter.filter(s => sets[i].has(s))
+          newScreenerSymbols = inter
+        }
+        return nsm
+      })
     }
+    setScreenerSymbols(newScreenerSymbols)
     setActiveFilters(prev => {
       const next = new Set(prev)
       next.delete(key)
       const conditions = getActiveConditions(next)
       setPage(1)
-      fetchStocks(1, '', marketFilter, sectorFilter, conditions)
+      fetchStocks(1, '', marketFilter, sectorFilter, conditions, undefined, undefined, newScreenerSymbols.length > 0 ? newScreenerSymbols : undefined)
       return next
     })
   }
 
   const handleClearAll = () => {
     setScreenerMap(new Map())
+    setScreenerSymbols([])
     setActiveFilters(new Set())
     setPage(1)
     fetchStocks(1, '', marketFilter, sectorFilter, [])
@@ -801,7 +835,7 @@ function App() {
     setSortKey(newKey)
     setSortDir(newDir)
     setPage(1)
-    fetchStocks(1, searchTerm, marketFilter, sectorFilter, getActiveConditions(activeFilters), newKey, newDir)
+    fetchStocks(1, searchTerm, marketFilter, sectorFilter, getActiveConditions(activeFilters), newKey, newDir, screenerSymbols.length > 0 ? screenerSymbols : undefined)
   }
 
   // ── 格式化工具 ────────────────────────────────────────────────────────────
