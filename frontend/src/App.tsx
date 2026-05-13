@@ -477,7 +477,12 @@ function App() {
   // 目前 screener 交集後的 symbol 清單（空陣列代表無 screener 啟用）
   const [screenerSymbols, setScreenerSymbols] = useState<string[]>([])
 
-  const fetchScreenerResults = useCallback(async (key: QuickFilterKey, endpoint: string) => {
+  const fetchScreenerResults = useCallback(async (
+    key: QuickFilterKey,
+    endpoint: string,
+    market: string,
+    sector: string,
+  ) => {
     setScreenerLoading(true)
     try {
       const res = await fetch(`${API_URL}/v1/stocks/screener/${endpoint}`)
@@ -497,17 +502,12 @@ function App() {
         intersection = intersection.filter(s => symbolSet.has(s))
       }
 
-      // 儲存交集清單供排序/換頁時使用
+      // 儲存交集清單供排序/換頁時使用（未套產業/市場過濾，fetchStocks 會負責過濾）
       setScreenerSymbols(intersection)
 
       if (intersection.length > 0) {
-        const symbolsParam = intersection.join(',')
-        const r2 = await fetch(`${API_URL}/v1/stocks?symbols=${encodeURIComponent(symbolsParam)}&limit=500`)
-        if (r2.ok) {
-          const d2 = await r2.json()
-          setStocks(d2.stocks || [])
-          setTotal(d2.total || d2.stocks?.length || 0)
-        }
+        // 使用 fetchStocks 並帶入目前的市場/產業篩選，確保結果與上方篩選條件一致
+        await fetchStocks(1, '', market, sector, [], undefined, undefined, intersection)
       } else {
         setStocks([])
         setTotal(0)
@@ -516,7 +516,7 @@ function App() {
       console.error(`screener ${endpoint} failed:`, e)
     }
     setScreenerLoading(false)
-  }, [screenerMap])
+  }, [screenerMap, fetchStocks])
 
   // ── 大盤指數 ──────────────────────────────────────────────────────────────
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([])
@@ -732,7 +732,7 @@ function App() {
     setPage(1)
     setSearchTerm('')
     setSortKey('')
-    fetchStocks(1, '', market, sectorFilter, getActiveConditions(activeFilters))
+    fetchStocks(1, '', market, sectorFilter, getActiveConditions(activeFilters), undefined, undefined, screenerSymbols.length > 0 ? screenerSymbols : undefined)
   }
 
   const handleSectorFilter = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -741,7 +741,7 @@ function App() {
     setPage(1)
     setSearchTerm('')
     setSortKey('')
-    fetchStocks(1, '', marketFilter, sector, getActiveConditions(activeFilters))
+    fetchStocks(1, '', marketFilter, sector, getActiveConditions(activeFilters), undefined, undefined, screenerSymbols.length > 0 ? screenerSymbols : undefined)
   }
 
   const handlePage = (newPage: number) => {
@@ -779,9 +779,9 @@ function App() {
         }
       } else {
         next.add(key)
-        // 若是 screener key，非同步呼叫 screener API
+        // 若是 screener key，非同步呼叫 screener API（帶入目前市場/產業篩選）
         if (isScreenerKey) {
-          fetchScreenerResults(key, screenerEndpoint!)
+          fetchScreenerResults(key, screenerEndpoint!, marketFilter, sectorFilter)
         }
       }
       // 一般 conditions（高存貨周轉率本身也有 conditions，照常傳給後端）
