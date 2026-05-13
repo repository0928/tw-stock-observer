@@ -1150,15 +1150,16 @@ function App() {
             : marketIndices.map((idx) => {
                 const isUp = (idx.change ?? 0) > 0
                 const isDown = (idx.change ?? 0) < 0
-                const color = isUp ? '#4ade80' : isDown ? '#f87171' : '#9ca3af'
+                // 台灣習慣：漲 → 紅色，跌 → 綠色
+                const color = isUp ? '#ff4d4d' : isDown ? '#33cc66' : '#9ca3af'
                 const bgColor = isUp
-                  ? 'rgba(74,222,128,0.07)'
-                  : isDown ? 'rgba(248,113,113,0.07)' : 'rgba(255,255,255,0.04)'
+                  ? 'rgba(255,77,77,0.07)'
+                  : isDown ? 'rgba(51,204,102,0.07)' : 'rgba(255,255,255,0.04)'
                 const sign = isUp ? '+' : ''
                 return (
                   <div key={idx.code} style={{
                     background: bgColor,
-                    border: `1px solid ${isUp ? 'rgba(74,222,128,0.2)' : isDown ? 'rgba(248,113,113,0.2)' : 'rgba(255,255,255,0.08)'}`,
+                    border: `1px solid ${isUp ? 'rgba(255,77,77,0.2)' : isDown ? 'rgba(51,204,102,0.2)' : 'rgba(255,255,255,0.08)'}`,
                     borderRadius: '12px', padding: '16px 20px',
                     display: 'flex', flexDirection: 'column', gap: '4px',
                   }}>
@@ -1198,14 +1199,13 @@ function App() {
                 ))
               : macroIndicators.map((ind) => {
                   const isBCSI = ind.code === 'BCSI'
-                  const isUSDTWD = ind.code === 'USDTWD'
                   const chg = ind.change ?? 0
-                  // 台幣匯率：數值下降（台幣升值）= 利多 → 綠色
-                  const isPositive = isUSDTWD ? chg < 0 : chg > 0
-                  const isNegative = isUSDTWD ? chg > 0 : chg < 0
-                  const color = isBCSI ? '#9ca3af' : isPositive ? '#4ade80' : isNegative ? '#f87171' : '#9ca3af'
-                  const borderColor = isBCSI ? 'rgba(255,255,255,0.08)' : isPositive ? 'rgba(74,222,128,0.2)' : isNegative ? 'rgba(248,113,113,0.2)' : 'rgba(255,255,255,0.08)'
-                  const bgColor = isBCSI ? 'rgba(255,255,255,0.03)' : isPositive ? 'rgba(74,222,128,0.06)' : isNegative ? 'rgba(248,113,113,0.06)' : 'rgba(255,255,255,0.03)'
+                  // 台灣習慣：漲 → 紅色，跌 → 綠色（統一數字方向，不做語意判斷）
+                  const isUp = chg > 0
+                  const isDown = chg < 0
+                  const color = isBCSI ? '#9ca3af' : isUp ? '#ff4d4d' : isDown ? '#33cc66' : '#9ca3af'
+                  const borderColor = isBCSI ? 'rgba(255,255,255,0.08)' : isUp ? 'rgba(255,77,77,0.2)' : isDown ? 'rgba(51,204,102,0.2)' : 'rgba(255,255,255,0.08)'
+                  const bgColor = isBCSI ? 'rgba(255,255,255,0.03)' : isUp ? 'rgba(255,77,77,0.06)' : isDown ? 'rgba(51,204,102,0.06)' : 'rgba(255,255,255,0.03)'
                   const sign = (ind.change ?? 0) > 0 ? '+' : ''
                   const decimals = ind.code === 'USDTWD' ? 3 : ind.code === 'US10Y' ? 3 : 2
                   return (

@@ -124,6 +124,7 @@ class Stock(BaseModel):
     foreign_net_buy = Column(BIGINT)                # 外資買賣超
     investment_trust_net_buy = Column(BIGINT)       # 投信買賣超
     dealer_net_buy = Column(BIGINT)                 # 自營商買賣超
+    foreign_consecutive_days = Column(Integer)      # 外資連續買賣超天數（正=買超，負=賣超）
 
     # 財報（季更新）
     gross_margin = Column(DECIMAL(8, 2))            # 毛利率(%)
@@ -135,6 +136,9 @@ class Stock(BaseModel):
 
     # 融資/融券
     margin_long = Column(Integer)                   # 融資餘額（張）
+    margin_long_prev = Column(Integer)              # 融資前日餘額（張）
+    margin_long_chg_pct = Column(DECIMAL(8, 2))     # 融資日變動 %
+    margin_surge = Column(Boolean, default=False)   # 融資急增警示（日增幅 >= 20%）
     margin_short = Column(Integer)                  # 融券餘額（張）
 
     # 注意/處置/ETF 標記
@@ -144,6 +148,12 @@ class Stock(BaseModel):
 
     # 效率指標（TTM，近四季滾動年化）
     inventory_turnover = Column(DECIMAL(8, 2))       # 存貨周轉率（次/年）
+
+    # 基本面進階指標（季更新）
+    core_profit_ratio  = Column(DECIMAL(8, 2))       # 本業獲利佔比(%) = 營業利益/稅後淨利
+    roe_quality        = Column(Boolean, default=False) # ROE品質標記 (roe≥15 & op_margin≥10 & gm≥30)
+    free_cash_flow_ps  = Column(DECIMAL(10, 2))      # 每股自由現金流（待資料源補充）
+    interest_coverage  = Column(DECIMAL(10, 2))      # 利息保障倍數（待資料源補充）
 
     # 股利
     ex_dividend_date = Column(Date)                 # 除息日

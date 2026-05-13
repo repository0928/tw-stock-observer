@@ -82,6 +82,7 @@ class StockResponse(StockBase):
     foreign_net_buy: Optional[int] = None
     investment_trust_net_buy: Optional[int] = None
     dealer_net_buy: Optional[int] = None
+    foreign_consecutive_days: Optional[int] = None
 
     # 財報
     gross_margin: Optional[Decimal] = None
@@ -93,6 +94,9 @@ class StockResponse(StockBase):
 
     # 融資/融券
     margin_long: Optional[int] = None
+    margin_long_prev: Optional[int] = None
+    margin_long_chg_pct: Optional[Decimal] = None
+    margin_surge: Optional[bool] = None
     margin_short: Optional[int] = None
 
     # 標記
@@ -105,6 +109,15 @@ class StockResponse(StockBase):
     cash_dividend: Optional[Decimal] = None
     dividend_per_share: Optional[Decimal] = None
     dividend_yield: Optional[Decimal] = None
+
+    # 效率指標
+    inventory_turnover: Optional[Decimal] = None
+
+    # 基本面進階指標
+    core_profit_ratio: Optional[Decimal] = None    # 本業獲利佔比(%)
+    roe_quality: Optional[bool] = None             # ROE 品質標記
+    free_cash_flow_ps: Optional[Decimal] = None    # 每股自由現金流
+    interest_coverage: Optional[Decimal] = None    # 利息保障倍數
 
     class Config:
         from_attributes = True
