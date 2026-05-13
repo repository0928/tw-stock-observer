@@ -506,8 +506,16 @@ function App() {
       setScreenerSymbols(intersection)
 
       if (intersection.length > 0) {
-        // 使用 fetchStocks 並帶入目前的市場/產業篩選，確保結果與上方篩選條件一致
-        await fetchStocks(1, '', market, sector, [], undefined, undefined, intersection)
+        // 直接發請求，帶入目前市場/產業過濾，不依賴 fetchStocks（避免前向引用）
+        let url = `${API_URL}/v1/stocks?symbols=${encodeURIComponent(intersection.join(','))}&limit=500`
+        if (market) url += `&market_type=${encodeURIComponent(market)}`
+        if (sector) url += `&sector=${encodeURIComponent(sector)}`
+        const r2 = await fetch(url)
+        if (r2.ok) {
+          const d2 = await r2.json()
+          setStocks(d2.stocks || [])
+          setTotal(d2.total || d2.stocks?.length || 0)
+        }
       } else {
         setStocks([])
         setTotal(0)
@@ -516,7 +524,7 @@ function App() {
       console.error(`screener ${endpoint} failed:`, e)
     }
     setScreenerLoading(false)
-  }, [screenerMap, fetchStocks])
+  }, [screenerMap])
 
   // ── 大盤指數 ──────────────────────────────────────────────────────────────
   const [marketIndices, setMarketIndices] = useState<MarketIndex[]>([])
