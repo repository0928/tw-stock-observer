@@ -132,6 +132,9 @@ type QuickFilterKey =
   | 'roe_quality' | 'core_profit_high'
   | 'foreign_buy_streak' | 'foreign_sell_streak'
   | 'margin_surge_alert'
+  // ── 四大面向新增 ──
+  | 'op_margin_rising' | 'fcf_positive' | 'interest_cover_high'
+  | 'margin_dump' | 'revenue_yoy_consecutive'
 
 // 呼叫 screener API 的篩選 key 與對應端點
 const SCREENER_ENDPOINT_MAP: Partial<Record<QuickFilterKey, string>> = {
@@ -140,6 +143,8 @@ const SCREENER_ENDPOINT_MAP: Partial<Record<QuickFilterKey, string>> = {
   contract_liabilities_growth:  'contract-liabilities-growth',
   roe_quality:                  'roe-quality',
   core_profit_high:             'core-profit',
+  op_margin_rising:             'operating-margin-rising',
+  revenue_yoy_consecutive:      'revenue-yoy-consecutive',
 }
 
 interface QuickFilterDef {
@@ -328,6 +333,120 @@ const FILTER_GROUPS: { label: string; filters: QuickFilterDef[] }[] = [
       {
         key: 'close_at_high', label: '收在最高', emoji: '🎯', tooltip: '收盤價 = 當日最高價',
         conditions: [{ field: 'close_at_high', op: 'is_true', value: true }],
+      },
+    ],
+  },
+]
+
+// ─── 四大面向篩選群組（並列新增）────────────────────────────────────────────
+const DIMENSION_GROUPS: { label: string; emoji: string; filters: QuickFilterDef[] }[] = [
+  {
+    label: '基本面', emoji: '📊',
+    filters: [
+      {
+        key: 'roe_quality', label: 'ROE 品質股', emoji: '🏆',
+        tooltip: 'ROE≥15% 且 營益率≥10% 且 毛利率≥30%（多維度高品質獲利）',
+        conditions: [],
+      },
+      {
+        key: 'core_profit_high', label: '本業獲利≥80%', emoji: '🎯',
+        tooltip: '本業獲利佔比（營業利益/稅後淨利）≥80%，排除靠業外灌水的公司',
+        conditions: [],
+      },
+      {
+        key: 'gross_margin_rising', label: '毛利率逐季↑', emoji: '📈',
+        tooltip: '最近 4 季毛利率均 ≥ 30% 且逐季嚴格遞增',
+        conditions: [],
+      },
+      {
+        key: 'op_margin_rising', label: '營益率逐季↑', emoji: '📈',
+        tooltip: '最近 4 季營業利益率均 ≥ 10% 且逐季嚴格遞增（走勢向上）',
+        conditions: [],
+      },
+      {
+        key: 'net_income_outpace', label: '淨利增幅>營收', emoji: '🔍',
+        tooltip: '最新季淨利年增率 > 營收年增率（利潤率擴張）',
+        conditions: [],
+      },
+      {
+        key: 'fcf_positive', label: '自由現金流為正', emoji: '💧',
+        tooltip: '每股自由現金流（FCF）> 0，代表真實造血能力',
+        conditions: [{ field: 'free_cash_flow_ps', op: 'min', value: 0.01 }],
+      },
+      {
+        key: 'interest_cover_high', label: '利息保障≥5倍', emoji: '🛡️',
+        tooltip: '利息保障倍數 ≥ 5 倍（營業利益 / 利息費用），還債底氣充足',
+        conditions: [{ field: 'interest_coverage', op: 'min', value: 5 }],
+      },
+      {
+        key: 'low_debt', label: '低負債比', emoji: '⚖️',
+        tooltip: '負債比率 ≤ 40%',
+        conditions: [{ field: 'debt_ratio', op: 'max', value: 40 }],
+      },
+    ],
+  },
+  {
+    label: '市場情緒', emoji: '💰',
+    filters: [
+      {
+        key: 'margin_surge_alert', label: '融資急增⚠️', emoji: '🚨',
+        tooltip: '融資餘額單日暴增 ≥ 20%（散戶追價，波段末段警訊）',
+        conditions: [{ field: 'margin_surge', op: 'is_true', value: true }],
+      },
+      {
+        key: 'margin_dump', label: '融資斷頭殺出', emoji: '🧹',
+        tooltip: '融資單日減少 ≥ 20%（籌碼清洗，可能是買點）',
+        conditions: [{ field: 'margin_long_chg_pct', op: 'max', value: -20 }],
+      },
+      {
+        key: 'foreign_buy_streak', label: '外資連買 5+ 天', emoji: '🌏',
+        tooltip: '外資連續買超 ≥ 5 個交易日，趨勢成形',
+        conditions: [{ field: 'foreign_consecutive_days', op: 'min', value: 5 }],
+      },
+      {
+        key: 'foreign_sell_streak', label: '外資連賣 5+ 天', emoji: '⚡',
+        tooltip: '外資連續賣超 ≥ 5 個交易日（數值 ≤ -5），注意風險',
+        conditions: [{ field: 'foreign_consecutive_days', op: 'max', value: -5 }],
+      },
+      {
+        key: 'foreign_buy', label: '外資大買', emoji: '💼',
+        tooltip: '外資單日買超 ≥ 1000 張',
+        conditions: [{ field: 'foreign_net_buy', op: 'min', value: 1000 }],
+      },
+      {
+        key: 'trust_buy', label: '投信大買', emoji: '🏛️',
+        tooltip: '投信單日買超 ≥ 100 張',
+        conditions: [{ field: 'investment_trust_net_buy', op: 'min', value: 100 }],
+      },
+    ],
+  },
+  {
+    label: '產業面', emoji: '🏭',
+    filters: [
+      {
+        key: 'high_inventory_turnover', label: '高存貨周轉', emoji: '⚡',
+        tooltip: '年化存貨周轉率 ≥ 4 次（需求強勁）',
+        conditions: [{ field: 'inventory_turnover', op: 'min', value: 4 }],
+      },
+      {
+        key: 'contract_liabilities_growth', label: '合約負債增加', emoji: '📦',
+        tooltip: '合約負債連續 3 季增加，或單季 QoQ ≥ 20%（在手訂單能見度高）',
+        conditions: [],
+      },
+      {
+        key: 'revenue_yoy_consecutive', label: '月營收連續成長', emoji: '📅',
+        tooltip: '月營收年增率連續 3 個月以上為正成長',
+        conditions: [],
+      },
+      {
+        key: 'revenue_growth', label: '月營收年增 20%+', emoji: '📊',
+        tooltip: '當月月營收年增率 ≥ 20%',
+        conditions: [{ field: 'revenue_yoy', op: 'min', value: 20 }],
+      },
+      {
+        key: 'net_income_outpace', label: '淨利增幅>營收', emoji: '🔍',
+        tooltip: '最新季淨利年增率 > 營收年增率（利潤率擴張）',
+        conditions: [],
       },
     ],
   },
@@ -1360,6 +1479,30 @@ function App() {
                 <button key={def.key} title={def.tooltip} style={qBtnStyle(def)} onClick={() => handleQuickFilter(def.key)}>
                   {def.emoji} {def.label}
                   {def.disabled && <span style={{ marginLeft: '3px', fontSize: '0.68rem', opacity: 0.55 }}>（即將推出）</span>}
+                </button>
+              ))}
+            </div>
+          ))}
+
+          {/* ── 四大面向分隔線 ── */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '4px 0 2px' }}>
+            <div style={{ flex: 1, height: '1px', background: 'linear-gradient(90deg, transparent, rgba(124,58,237,0.3), transparent)' }} />
+            <span style={{ color: 'rgba(124,58,237,0.7)', fontSize: '0.68rem', whiteSpace: 'nowrap', letterSpacing: '0.05em' }}>
+              ── 選股面向 ──
+            </span>
+            <div style={{ flex: 1, height: '1px', background: 'linear-gradient(90deg, transparent, rgba(124,58,237,0.3), transparent)' }} />
+          </div>
+
+          {/* ── 四大面向篩選群組 ── */}
+          {DIMENSION_GROUPS.map(group => (
+            <div key={group.label} style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+              <span style={{ color: 'rgba(124,58,237,0.8)', fontSize: '0.73rem', minWidth: '30px', textAlign: 'right', flexShrink: 0 }} title={group.label}>
+                {group.emoji}
+              </span>
+              <div style={{ width: '1px', height: '14px', background: 'rgba(124,58,237,0.2)', flexShrink: 0 }} />
+              {group.filters.map(def => (
+                <button key={def.key} title={`[${group.label}] ${def.tooltip}`} style={qBtnStyle(def)} onClick={() => handleQuickFilter(def.key)}>
+                  {def.emoji} {def.label}
                 </button>
               ))}
             </div>

@@ -398,9 +398,10 @@ class StockQuarterlyFinancial(Base):
     quarter  = Column(Integer,    nullable=False, primary_key=True)  # 1~4
 
     # 損益（來自 TaiwanStockFinancialStatements）
-    gross_margin  = Column(DECIMAL(8, 2))   # 毛利率 (%)
-    net_income    = Column(BIGINT)           # 稅後淨利（千元）
-    revenue       = Column(BIGINT)           # 營收（千元）
+    gross_margin     = Column(DECIMAL(8, 2))   # 毛利率 (%)
+    operating_margin = Column(DECIMAL(8, 2))   # 營業利益率 (%)
+    net_income       = Column(BIGINT)           # 稅後淨利（千元）
+    revenue          = Column(BIGINT)           # 營收（千元）
 
     # 資產負債（來自 TaiwanStockBalanceSheet）
     contract_liabilities = Column(BIGINT)   # 合約負債（千元）

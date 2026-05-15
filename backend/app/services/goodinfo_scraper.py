@@ -184,15 +184,16 @@ async def fetch_goodinfo_financial(stock_id: str) -> dict:
         if yq not in quarterly_map:
             quarterly_map[yq] = {
                 "year": yq[0], "quarter": yq[1],
-                "gross_margin": None,
-                "net_income":   None,
-                "revenue":      None,
+                "gross_margin":     None,
+                "operating_margin": None,
+                "net_income":       None,
+                "revenue":          None,
                 "contract_liabilities": None,
-                "inventories":  None,
+                "inventories":      None,
             }
         return quarterly_map[yq]
 
-    # ── fs_data：Revenue, GrossProfit, IncomeAfterTaxes ──────────────────────
+    # ── fs_data：Revenue, GrossProfit, OperatingIncome, IncomeAfterTaxes ──────
 
     # 先把 Revenue 各季收集
     rev_by_yq: dict[tuple, float] = {}
@@ -218,6 +219,21 @@ async def fetch_goodinfo_financial(stock_id: str) -> dict:
                 entry["revenue"] = int(rev) if rev is not None else None
                 if rev and rev != 0:
                     entry["gross_margin"] = round(gp / rev * 100, 2)
+            except (ValueError, TypeError):
+                pass
+
+    # OperatingIncome → 計算季度營業利益率
+    for r in fs_data:
+        if r["type"] in ("OperatingIncome", "OperatingProfit"):
+            yq = _date_to_quarter(r["date"])
+            if not yq:
+                continue
+            try:
+                op_income = float(r["value"])
+                rev = rev_by_yq.get(yq)
+                entry = _get_or_create(yq)
+                if rev and rev != 0:
+                    entry["operating_margin"] = round(op_income / rev * 100, 2)
             except (ValueError, TypeError):
                 pass
 

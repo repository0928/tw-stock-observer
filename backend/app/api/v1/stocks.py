@@ -512,6 +512,7 @@ async def sync_quarterly_financials(
                             ins = pg_insert(StockQuarterlyFinancial).values(
                                 symbol=sym, year=q["year"], quarter=q["quarter"],
                                 gross_margin=q.get("gross_margin"),
+                                operating_margin=q.get("operating_margin"),
                                 net_income=q.get("net_income"),
                                 revenue=q.get("revenue"),
                                 contract_liabilities=q.get("contract_liabilities"),
@@ -521,6 +522,7 @@ async def sync_quarterly_financials(
                                 index_elements=["symbol", "year", "quarter"],
                                 set_={
                                     "gross_margin": q.get("gross_margin"),
+                                    "operating_margin": q.get("operating_margin"),
                                     "net_income": q.get("net_income"),
                                     "revenue": q.get("revenue"),
                                     "contract_liabilities": q.get("contract_liabilities"),
@@ -924,6 +926,124 @@ async def get_revenue_history(
         raise
     except Exception as e:
         logger.error(f"取得月營收歷史失敗 {symbol}: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/screener/operating-margin-rising")
+async def screener_operating_margin_rising(
+    min_margin: float = Query(10.0, description="每季營業利益率下限（%）"),
+    quarters: int = Query(4, ge=2, le=8, description="需要連續幾季"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：最近 N 季營業利益率均 ≥ min_margin，且逐季嚴格遞增（走勢向上）。
+    邏輯與 gross-margin-rising 相同，使用 stock_quarterly_financials.operating_margin。
+    """
+    from sqlalchemy import text
+
+    try:
+        sql = text("""
+            WITH ranked AS (
+                SELECT symbol, year, quarter, operating_margin,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY symbol
+                           ORDER BY year DESC, quarter DESC
+                       ) AS rn
+                FROM stock_quarterly_financials
+                WHERE operating_margin IS NOT NULL
+            ),
+            pivoted AS (
+                SELECT
+                    symbol,
+                    COUNT(*)                                                AS cnt,
+                    MIN(operating_margin)                                   AS min_om,
+                    MAX(CASE WHEN rn = 1 THEN operating_margin END)         AS om1,
+                    MAX(CASE WHEN rn = 2 THEN operating_margin END)         AS om2,
+                    MAX(CASE WHEN rn = 3 THEN operating_margin END)         AS om3,
+                    MAX(CASE WHEN rn = 4 THEN operating_margin END)         AS om4,
+                    MAX(CASE WHEN rn = 5 THEN operating_margin END)         AS om5,
+                    MAX(CASE WHEN rn = 6 THEN operating_margin END)         AS om6,
+                    MAX(CASE WHEN rn = 7 THEN operating_margin END)         AS om7,
+                    MAX(CASE WHEN rn = 8 THEN operating_margin END)         AS om8
+                FROM ranked
+                WHERE rn <= :quarters
+                GROUP BY symbol
+            )
+            SELECT symbol, om1, om2, om3, om4, om5, om6, om7, om8
+            FROM pivoted
+            WHERE cnt = :quarters
+              AND min_om >= :min_margin
+        """)
+        res = await db.execute(sql, {"quarters": quarters, "min_margin": min_margin})
+        candidates = res.fetchall()
+
+        matched_symbols = []
+        for row in candidates:
+            sym = row[0]
+            oms = [row[i + 1] for i in range(quarters) if row[i + 1] is not None]
+            if len(oms) < quarters:
+                continue
+            oms_f = [float(o) for o in oms]
+            # 嚴格遞增（om1 最新，om2 次新，…）
+            if all(oms_f[i] > oms_f[i + 1] for i in range(len(oms_f) - 1)):
+                matched_symbols.append(sym)
+
+        return {
+            "count": len(matched_symbols),
+            "symbols": matched_symbols,
+            "criteria": {"min_margin": min_margin, "quarters": quarters},
+        }
+    except Exception as e:
+        logger.error(f"screener operating-margin-rising 失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/screener/revenue-yoy-consecutive")
+async def screener_revenue_yoy_consecutive(
+    months: int = Query(3, ge=2, le=12, description="需連續幾個月年增率為正"),
+    min_yoy: float = Query(0.0, description="年增率下限（%，預設 0 即為正成長）"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：月營收年增率連續 N 個月 ≥ min_yoy%。
+    使用 stock_revenue_monthly 表，單一 SQL Window Function。
+    """
+    from sqlalchemy import text
+
+    try:
+        sql = text("""
+            WITH ranked AS (
+                SELECT symbol, year_month, revenue_yoy,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY symbol
+                           ORDER BY year_month DESC
+                       ) AS rn
+                FROM stock_revenue_monthly
+                WHERE revenue_yoy IS NOT NULL
+            ),
+            check_pass AS (
+                SELECT symbol,
+                       COUNT(*)                              AS cnt,
+                       BOOL_AND(revenue_yoy >= :min_yoy)    AS all_pass
+                FROM ranked
+                WHERE rn <= :months
+                GROUP BY symbol
+            )
+            SELECT symbol
+            FROM check_pass
+            WHERE cnt = :months AND all_pass = TRUE
+            ORDER BY symbol
+        """)
+        res = await db.execute(sql, {"months": months, "min_yoy": min_yoy})
+        matched_symbols = [row[0] for row in res.fetchall()]
+
+        return {
+            "count": len(matched_symbols),
+            "symbols": matched_symbols,
+            "criteria": {"months": months, "min_yoy": min_yoy},
+        }
+    except Exception as e:
+        logger.error(f"screener revenue-yoy-consecutive 失敗: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
 
 
