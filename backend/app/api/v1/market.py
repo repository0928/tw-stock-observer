@@ -222,13 +222,13 @@ async def _get_fear_greed() -> dict:
 
         # 評級中文化
         rating_map = {
-            "Extreme Fear": "極度恐慌",
-            "Fear": "恐慌",
-            "Neutral": "中性",
-            "Greed": "貪婪",
-            "Extreme Greed": "極度貪婪",
+            "extreme fear": "極度恐慌",
+            "fear": "恐慌",
+            "neutral": "中性",
+            "greed": "貪婪",
+            "extreme greed": "極度貪婪",
         }
-        rating_zh = rating_map.get(rating, rating)
+        rating_zh = rating_map.get(rating.lower(), rating)
 
         return {
             "name": "貪婪指數", "code": "FNG",
