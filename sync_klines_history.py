@@ -47,7 +47,7 @@ MAX_RETRY  = 3
 
 # ── FinMind ────────────────────────────────────────────────────────────────────
 
-async def fetch_price(session: aiohttp.ClientSession, symbol: str) -> list[dict]:
+async def fetch_price(session: aiohttp.ClientSession, symbol: str) -> list:
     url = (
         f"{FINMIND_BASE}?dataset=TaiwanStockPrice"
         f"&data_id={symbol}&start_date={START_DATE}&token={FINMIND_TOKEN}"
@@ -83,27 +83,20 @@ async def fetch_price(session: aiohttp.ClientSession, symbol: str) -> list[dict]
 # ── 技術指標計算（pandas） ────────────────────────────────────────────────────
 
 def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    輸入：已按 date 升序排列的 DataFrame，含 close 欄位
-    輸出：加上 sma_20/50/200、rsi_14、macd/signal/histogram
-    """
     close = df["close"]
 
-    # SMA
     df["sma_20"]  = close.rolling(20,  min_periods=1).mean().round(2)
     df["sma_50"]  = close.rolling(50,  min_periods=1).mean().round(2)
     df["sma_200"] = close.rolling(200, min_periods=1).mean().round(2)
 
-    # RSI 14（Wilder 平滑法）
-    delta = close.diff()
-    gain  = delta.clip(lower=0)
-    loss  = (-delta).clip(lower=0)
+    delta    = close.diff()
+    gain     = delta.clip(lower=0)
+    loss     = (-delta).clip(lower=0)
     avg_gain = gain.ewm(com=13, min_periods=14, adjust=False).mean()
     avg_loss = loss.ewm(com=13, min_periods=14, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, float("nan"))
     df["rsi_14"] = (100 - 100 / (1 + rs)).round(2)
 
-    # MACD（12/26/9）
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     macd  = ema12 - ema26
@@ -115,9 +108,8 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _d(val) -> Decimal | None:
-    """float → Decimal，None 安全"""
-    if val is None or (isinstance(val, float) and (val != val)):  # NaN check
+def _d(val):
+    if val is None or (isinstance(val, float) and val != val):
         return None
     try:
         return Decimal(str(round(float(val), 6)))
@@ -125,31 +117,18 @@ def _d(val) -> Decimal | None:
         return None
 
 
-# ── 主流程 ────────────────────────────────────────────────────────────────────
+# ── 單支股票同步 ──────────────────────────────────────────────────────────────
 
-async def sync_stock(
-    session: aiohttp.ClientSession,
-    cur,
-    conn,
-    symbol: str,
-    stock_id: str,
-) -> tuple[int, int]:
-    """回傳 (inserted, skipped_rows)"""
+async def sync_stock(session, cur, conn, symbol, stock_id):
     rows = await fetch_price(session, symbol)
     if not rows:
         return 0, 0
 
-    # 整理成 DataFrame
     df = pd.DataFrame(rows)
     rename = {
-        "date": "date",
-        "open": "open",
-        "max": "high",
-        "min": "low",
-        "close": "close",
-        "Trading_Volume": "volume",
-        "Trading_money": "amount",
-        "spread": "change",
+        "date": "date", "open": "open", "max": "high", "min": "low",
+        "close": "close", "Trading_Volume": "volume",
+        "Trading_money": "amount", "spread": "change",
     }
     df = df.rename(columns={k: v for k, v in rename.items() if k in df.columns})
 
@@ -168,27 +147,23 @@ async def sync_stock(
     df["amount"] = pd.to_numeric(df.get("amount", pd.Series(dtype=float)), errors="coerce").fillna(0).astype(int)
     df["change"] = pd.to_numeric(df.get("change", pd.Series(dtype=float)), errors="coerce")
 
-    # 過濾無效行
     df = df.dropna(subset=["close"])
     df = df.sort_values("date").reset_index(drop=True)
 
     if df.empty:
         return 0, 0
 
-    # 計算漲跌幅
     df["change_percent"] = (
         df["change"] / (df["close"] - df["change"]) * 100
     ).where((df["close"] - df["change"]) != 0).round(2)
 
-    # 計算技術指標
     df = calc_indicators(df)
 
-    # Upsert
     now = datetime.now(timezone.utc)
     records = []
     for _, r in df.iterrows():
         records.append((
-            str(uuid.uuid4()),          # id
+            str(uuid.uuid4()),
             symbol,
             stock_id,
             r["date"],
@@ -198,7 +173,7 @@ async def sync_stock(
             _d(r.get("sma_20")), _d(r.get("sma_50")), _d(r.get("sma_200")),
             _d(r.get("rsi_14")),
             _d(r.get("macd")), _d(r.get("macd_signal")), _d(r.get("macd_histogram")),
-            now, now,                   # created_at, updated_at
+            now, now,
         ))
 
     psycopg2.extras.execute_values(
@@ -213,22 +188,22 @@ async def sync_stock(
              created_at, updated_at)
         VALUES %s
         ON CONFLICT (symbol, date) DO UPDATE SET
-            open            = EXCLUDED.open,
-            high            = EXCLUDED.high,
-            low             = EXCLUDED.low,
-            close           = EXCLUDED.close,
-            volume          = EXCLUDED.volume,
-            amount          = EXCLUDED.amount,
-            change          = EXCLUDED.change,
-            change_percent  = EXCLUDED.change_percent,
-            sma_20          = EXCLUDED.sma_20,
-            sma_50          = EXCLUDED.sma_50,
-            sma_200         = EXCLUDED.sma_200,
-            rsi_14          = EXCLUDED.rsi_14,
-            macd            = EXCLUDED.macd,
-            macd_signal     = EXCLUDED.macd_signal,
-            macd_histogram  = EXCLUDED.macd_histogram,
-            updated_at      = EXCLUDED.updated_at
+            open           = EXCLUDED.open,
+            high           = EXCLUDED.high,
+            low            = EXCLUDED.low,
+            close          = EXCLUDED.close,
+            volume         = EXCLUDED.volume,
+            amount         = EXCLUDED.amount,
+            change         = EXCLUDED.change,
+            change_percent = EXCLUDED.change_percent,
+            sma_20         = EXCLUDED.sma_20,
+            sma_50         = EXCLUDED.sma_50,
+            sma_200        = EXCLUDED.sma_200,
+            rsi_14         = EXCLUDED.rsi_14,
+            macd           = EXCLUDED.macd,
+            macd_signal    = EXCLUDED.macd_signal,
+            macd_histogram = EXCLUDED.macd_histogram,
+            updated_at     = EXCLUDED.updated_at
         """,
         records,
         page_size=500,
@@ -237,11 +212,13 @@ async def sync_stock(
     return len(records), 0
 
 
+# ── 主流程 ────────────────────────────────────────────────────────────────────
+
 async def main():
     conn = psycopg2.connect(**DB_CONN)
     cur  = conn.cursor()
 
-    # 確保有 UNIQUE constraint（若不存在則建立）
+    # 確保有 UNIQUE constraint
     cur.execute("""
         DO $$
         BEGIN
@@ -268,7 +245,7 @@ async def main():
     stocks = cur.fetchall()
     logger.info(f"共 {len(stocks)} 支股票待同步（含 ETF）")
 
-    # 取已有近 30 天資料的股票（skip 用）
+    # 已有近 30 天資料的股票跳過
     cur.execute("""
         SELECT DISTINCT symbol
         FROM klines_daily
@@ -305,19 +282,6 @@ async def main():
                 logger.error(f"[{i+1}/{len(stocks)}] {symbol} 失敗: {e}")
                 try:
                     conn.rollback()
-                except Exception:
-                    pass
-
-    cur.close()
-    conn.close()
-    logger.info(
-        f"\n✅ 歷史 K 線同步完成：成功={success}  跳過={skipped}  失敗={failed}"
-    )
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-# test
                 except Exception:
                     pass
 
