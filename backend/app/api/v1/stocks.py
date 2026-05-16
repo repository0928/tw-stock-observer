@@ -1049,3 +1049,181 @@ async def screener_revenue_yoy_consecutive(
 
 if __name__ == "__main__":
     print("✅ 股票 API 路由已載入")
+
+
+# ── 技術面篩選端點 ─────────────────────────────────────────────────────────────
+
+@router.get("/screener/ma20-breakout")
+async def screener_ma20_breakout(
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：股價站上 MA20（最新收盤 > SMA20，且 5 日內有穿越）。
+    """
+    from sqlalchemy import text
+    try:
+        sql = text("""
+            WITH latest AS (
+                SELECT DISTINCT ON (symbol)
+                    symbol, date, close, sma_20
+                FROM klines_daily
+                WHERE sma_20 IS NOT NULL
+                ORDER BY symbol, date DESC
+            ),
+            prev5 AS (
+                SELECT k.symbol,
+                       BOOL_OR(k.close <= k.sma_20) AS had_below
+                FROM klines_daily k
+                JOIN (
+                    SELECT symbol, date AS latest_date
+                    FROM latest
+                ) l ON k.symbol = l.symbol
+                WHERE k.date >= (l.latest_date::date - INTERVAL '5 days')::text
+                  AND k.date < l.latest_date
+                GROUP BY k.symbol
+            )
+            SELECT l.symbol
+            FROM latest l
+            JOIN prev5 p ON l.symbol = p.symbol
+            WHERE l.close > l.sma_20
+              AND p.had_below = TRUE
+            ORDER BY l.symbol
+        """)
+        res = await db.execute(sql)
+        symbols = [r[0] for r in res.fetchall()]
+        return {"count": len(symbols), "symbols": symbols, "criteria": {"type": "ma20_breakout"}}
+    except Exception as e:
+        logger.error(f"screener ma20-breakout 失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/screener/ma60-above")
+async def screener_ma60_above(
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：收盤站上 MA60（多頭格局）。
+    """
+    from sqlalchemy import text
+    try:
+        sql = text("""
+            SELECT DISTINCT ON (symbol) symbol
+            FROM klines_daily
+            WHERE sma_50 IS NOT NULL
+              AND close > sma_50
+            ORDER BY symbol, date DESC
+        """)
+        res = await db.execute(sql)
+        symbols = [r[0] for r in res.fetchall()]
+        return {"count": len(symbols), "symbols": symbols, "criteria": {"type": "ma60_above"}}
+    except Exception as e:
+        logger.error(f"screener ma60-above 失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/screener/rsi-oversold")
+async def screener_rsi_oversold(
+    threshold: float = Query(30.0, ge=10.0, le=45.0, description="RSI 超賣門檻（預設 30）"),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：RSI14 低於門檻（超賣訊號）。
+    """
+    from sqlalchemy import text
+    try:
+        sql = text("""
+            SELECT DISTINCT ON (symbol) symbol, rsi_14
+            FROM klines_daily
+            WHERE rsi_14 IS NOT NULL
+              AND rsi_14 < :threshold
+            ORDER BY symbol, date DESC
+        """)
+        res = await db.execute(sql, {"threshold": threshold})
+        rows = res.fetchall()
+        symbols = [r[0] for r in rows]
+        return {
+            "count": len(symbols), "symbols": symbols,
+            "criteria": {"type": "rsi_oversold", "threshold": threshold},
+        }
+    except Exception as e:
+        logger.error(f"screener rsi-oversold 失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/screener/macd-bullish")
+async def screener_macd_bullish(
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：MACD 柱狀圖由負轉正（近 3 日內翻多）。
+    """
+    from sqlalchemy import text
+    try:
+        sql = text("""
+            WITH ranked AS (
+                SELECT symbol, date, macd_histogram,
+                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+                FROM klines_daily
+                WHERE macd_histogram IS NOT NULL
+            ),
+            check_flip AS (
+                SELECT symbol,
+                       MAX(CASE WHEN rn = 1 THEN macd_histogram END) AS today_hist,
+                       MAX(CASE WHEN rn BETWEEN 2 AND 3 THEN macd_histogram END) AS prev_hist
+                FROM ranked
+                WHERE rn <= 3
+                GROUP BY symbol
+            )
+            SELECT symbol
+            FROM check_flip
+            WHERE today_hist > 0
+              AND prev_hist <= 0
+            ORDER BY symbol
+        """)
+        res = await db.execute(sql)
+        symbols = [r[0] for r in res.fetchall()]
+        return {"count": len(symbols), "symbols": symbols, "criteria": {"type": "macd_bullish"}}
+    except Exception as e:
+        logger.error(f"screener macd-bullish 失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")
+
+
+@router.get("/screener/golden-cross")
+async def screener_golden_cross(
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    篩選：MA20 在近 5 日穿越 MA50（黃金交叉）。
+    """
+    from sqlalchemy import text
+    try:
+        sql = text("""
+            WITH ranked AS (
+                SELECT symbol, date, sma_20, sma_50,
+                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+                FROM klines_daily
+                WHERE sma_20 IS NOT NULL AND sma_50 IS NOT NULL
+            ),
+            latest AS (
+                SELECT symbol,
+                       MAX(CASE WHEN rn = 1 THEN sma_20 END) AS ma20_now,
+                       MAX(CASE WHEN rn = 1 THEN sma_50 END) AS ma50_now,
+                       MAX(CASE WHEN rn BETWEEN 2 AND 5 THEN
+                           CASE WHEN sma_20 <= sma_50 THEN 1 ELSE 0 END
+                       END) AS had_below
+                FROM ranked
+                WHERE rn <= 5
+                GROUP BY symbol
+            )
+            SELECT symbol
+            FROM latest
+            WHERE ma20_now > ma50_now
+              AND had_below = 1
+            ORDER BY symbol
+        """)
+        res = await db.execute(sql)
+        symbols = [r[0] for r in res.fetchall()]
+        return {"count": len(symbols), "symbols": symbols, "criteria": {"type": "golden_cross"}}
+    except Exception as e:
+        logger.error(f"screener golden-cross 失敗: {e}")
+        raise HTTPException(status_code=500, detail="伺服器錯誤")

@@ -135,6 +135,8 @@ type QuickFilterKey =
   // ── 四大面向新增 ──
   | 'op_margin_rising' | 'fcf_positive' | 'interest_cover_high'
   | 'margin_dump' | 'revenue_yoy_consecutive'
+  // ── 技術面 ──
+  | 'ma20_breakout' | 'ma60_above' | 'rsi_oversold' | 'macd_bullish' | 'golden_cross'
 
 // 呼叫 screener API 的篩選 key 與對應端點
 const SCREENER_ENDPOINT_MAP: Partial<Record<QuickFilterKey, string>> = {
@@ -145,6 +147,12 @@ const SCREENER_ENDPOINT_MAP: Partial<Record<QuickFilterKey, string>> = {
   core_profit_high:             'core-profit',
   op_margin_rising:             'operating-margin-rising',
   revenue_yoy_consecutive:      'revenue-yoy-consecutive',
+  // 技術面 screener
+  ma20_breakout:  'ma20-breakout',
+  ma60_above:     'ma60-above',
+  rsi_oversold:   'rsi-oversold',
+  macd_bullish:   'macd-bullish',
+  golden_cross:   'golden-cross',
 }
 
 interface QuickFilterDef {
@@ -446,6 +454,36 @@ const DIMENSION_GROUPS: { label: string; emoji: string; filters: QuickFilterDef[
       {
         key: 'net_income_outpace', label: '淨利增幅>營收', emoji: '🔍',
         tooltip: '最新季淨利年增率 > 營收年增率（利潤率擴張）',
+        conditions: [],
+      },
+    ],
+  },
+  {
+    label: '技術面', emoji: '📈',
+    filters: [
+      {
+        key: 'ma20_breakout', label: 'MA20 突破', emoji: '🚀',
+        tooltip: '最新收盤站上 MA20，且 5 日內有從下方穿越（趨勢轉強訊號）',
+        conditions: [],
+      },
+      {
+        key: 'ma60_above', label: '站上 MA60', emoji: '📊',
+        tooltip: '收盤 > MA60（中期多頭格局）',
+        conditions: [],
+      },
+      {
+        key: 'rsi_oversold', label: 'RSI 超賣 <30', emoji: '🔔',
+        tooltip: 'RSI14 < 30，超賣區域，可能反彈（搭配基本面使用）',
+        conditions: [],
+      },
+      {
+        key: 'macd_bullish', label: 'MACD 翻多', emoji: '⚡',
+        tooltip: 'MACD 柱狀圖近 3 日由負轉正（動能翻多）',
+        conditions: [],
+      },
+      {
+        key: 'golden_cross', label: '黃金交叉', emoji: '✨',
+        tooltip: 'MA20 在近 5 日穿越 MA60（中長期趨勢看多）',
         conditions: [],
       },
     ],
