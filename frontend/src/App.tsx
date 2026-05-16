@@ -950,12 +950,23 @@ function App() {
           fetchScreenerResults(key, screenerEndpoint!, marketFilter, sectorFilter)
         }
       }
-      // 一般 conditions（高存貨周轉率本身也有 conditions，照常傳給後端）
+      // screener key 啟動時由 fetchScreenerResults 負責載入股票，不另呼叫 fetchStocks（避免競態覆蓋）
       const conditions = getActiveConditions(next)
       setPage(1)
       setSearchTerm('')
       setSortKey('')
-      fetchStocks(1, '', marketFilter, sectorFilter, conditions)
+      if (!isScreenerKey || next.has(key) === false) {
+        // 非 screener 篩選，或正在取消篩選 → 用 fetchStocks 重載（附 screenerSymbols）
+        const currentSymbols = [...(next.size > 0
+          ? (() => {
+              // 若還有其他 screener key 仍有效，帶入目前 screenerSymbols
+              return screenerSymbols.length > 0 ? screenerSymbols : []
+            })()
+          : [])]
+        fetchStocks(1, '', marketFilter, sectorFilter, conditions,
+          undefined, undefined,
+          currentSymbols.length > 0 ? currentSymbols : undefined)
+      }
       return next
     })
   }
