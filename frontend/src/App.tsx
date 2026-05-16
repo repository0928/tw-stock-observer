@@ -491,6 +491,12 @@ const DIMENSION_GROUPS: { label: string; emoji: string; filters: QuickFilterDef[
 ]
 
 const ALL_FILTERS: QuickFilterDef[] = FILTER_GROUPS.flatMap(g => g.filters)
+// 合併 FILTER_GROUPS 與 DIMENSION_GROUPS，依 key 去重（以 DIMENSION_GROUPS 覆蓋同 key 的舊定義）
+const ALL_FILTER_DEFS: QuickFilterDef[] = (() => {
+  const map = new Map<QuickFilterKey, QuickFilterDef>()
+  ;[...ALL_FILTERS, ...DIMENSION_GROUPS.flatMap(g => g.filters)].forEach(f => map.set(f.key, f))
+  return [...map.values()]
+})()
 
 // ─── 欄位定義 ─────────────────────────────────────────────────────────────────
 
@@ -819,7 +825,7 @@ function App() {
 
   const getActiveConditions = useCallback((keys: Set<QuickFilterKey>): FilterCondition[] => {
     const sets = Array.from(keys)
-      .map(k => ALL_FILTERS.find(f => f.key === k))
+      .map(k => ALL_FILTER_DEFS.find(f => f.key === k))
       .filter((f): f is QuickFilterDef => !!f && !f.disabled)
       .map(f => f.conditions)
     return mergeConditions(sets)
@@ -917,7 +923,7 @@ function App() {
   }
 
   const handleQuickFilter = (key: QuickFilterKey) => {
-    const def = ALL_FILTERS.find(f => f.key === key)
+    const def = ALL_FILTER_DEFS.find(f => f.key === key)
     if (!def || def.disabled) return
 
     const screenerEndpoint = SCREENER_ENDPOINT_MAP[key]
@@ -1205,7 +1211,7 @@ function App() {
       })
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
-  const activeFilterDefs = ALL_FILTERS.filter(f => activeFilters.has(f.key))
+  const activeFilterDefs = ALL_FILTER_DEFS.filter(f => activeFilters.has(f.key))
 
   // ── 樣式 ──────────────────────────────────────────────────────────────────
 
