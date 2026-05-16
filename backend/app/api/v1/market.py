@@ -144,3 +144,82 @@ async def get_market_indices() -> dict:
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "indices": [taiex, futures, tpex, vix],
     }
+
+
+async def _get_us10y() -> dict:
+    """美國10年期公債殖利率 — Yahoo Finance (^TNX)"""
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1d&range=2d"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with aiohttp.ClientSession() as s:
+        data = await _get(s, url, headers)
+    try:
+        result = data["chart"]["result"][0]
+        closes = result["indicators"]["quote"][0]["close"]
+        closes = [c for c in closes if c is not None]
+        price = round(closes[-1], 3)
+        prev  = round(closes[-2], 3) if len(closes) >= 2 else price
+        change = round(price - prev, 3)
+        change_pct = round(change / prev * 100, 2) if prev else 0
+        return {
+            "name": "美債10Y殖利率", "code": "US10Y",
+            "price": price, "change": change, "change_pct": change_pct,
+            "unit": "%", "hint": "快速↑壓縮股市本益比",
+        }
+    except Exception:
+        pass
+    return {
+        "name": "美債10Y殖利率", "code": "US10Y",
+        "price": None, "change": None, "change_pct": None,
+        "unit": "%", "hint": "快速↑壓縮股市本益比",
+    }
+
+
+async def _get_usd_twd() -> dict:
+    """新台幣匯率 (USD/TWD) — Yahoo Finance"""
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/USDTWD%3DX?interval=1d&range=2d"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with aiohttp.ClientSession() as s:
+        data = await _get(s, url, headers)
+    try:
+        result = data["chart"]["result"][0]
+        closes = result["indicators"]["quote"][0]["close"]
+        closes = [c for c in closes if c is not None]
+        price = round(closes[-1], 3)
+        prev  = round(closes[-2], 3) if len(closes) >= 2 else price
+        change = round(price - prev, 3)
+        change_pct = round(change / prev * 100, 2) if prev else 0
+        return {
+            "name": "新台幣匯率", "code": "USDTWD",
+            "price": price, "change": change, "change_pct": change_pct,
+            "unit": "元/USD", "hint": "台幣升值→外資流入利多",
+        }
+    except Exception:
+        pass
+    return {
+        "name": "新台幣匯率", "code": "USDTWD",
+        "price": None, "change": None, "change_pct": None,
+        "unit": "元/USD", "hint": "台幣升值→外資流入利多",
+    }
+
+
+@router.get("/macro")
+async def get_macro_indicators() -> dict:
+    """取得總體經濟指標：景氣對策信號、美債10Y殖利率、VIX、新台幣匯率"""
+    us10y, vix, usdtwd = await asyncio.gather(
+        _get_us10y(), _get_vix(), _get_usd_twd(),
+    )
+    # 景氣對策信號為國發會月更新資料，提供官方連結供查閱
+    bcsi = {
+        "name": "景氣對策信號",
+        "code": "BCSI",
+        "price": None,
+        "change": None,
+        "change_pct": None,
+        "unit": "燈號",
+        "hint": "綠燈↑持股 藍燈↓加碼",
+        "link": "https://index.ndc.gov.tw/n/zh_tw/chart/BCSI",
+    }
+    return {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "indicators": [bcsi, us10y, vix, usdtwd],
+    }
