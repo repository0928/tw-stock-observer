@@ -562,6 +562,7 @@ interface MacroIndicator {
   unit?: string
   hint?: string
   link?: string
+  rating?: string | null   // FNG 評級文字（如「貪婪」、「極度恐慌」）
 }
 
 // ─── 常數 ────────────────────────────────────────────────────────────────────
@@ -1326,15 +1327,25 @@ function App() {
                 ))
               : macroIndicators.map((ind) => {
                   const isBCSI = ind.code === 'BCSI'
+                  const isFNG  = ind.code === 'FNG'
                   const chg = ind.change ?? 0
-                  // 台灣習慣：漲 → 紅色，跌 → 綠色（統一數字方向，不做語意判斷）
+                  // FNG：分數高（貪婪）→ 紅色警示，分數低（恐慌）→ 綠色機會
+                  // 其他：台灣習慣漲紅跌綠
+                  const fngScore = isFNG ? (ind.price ?? 50) : 50
+                  const fngColor = isFNG
+                    ? (fngScore >= 75 ? '#ff4d4d' : fngScore >= 56 ? '#ff9900' : fngScore >= 45 ? '#9ca3af' : fngScore >= 25 ? '#33cc66' : '#00ccff')
+                    : null
                   const isUp = chg > 0
                   const isDown = chg < 0
-                  const color = isBCSI ? '#9ca3af' : isUp ? '#ff4d4d' : isDown ? '#33cc66' : '#9ca3af'
-                  const borderColor = isBCSI ? 'rgba(255,255,255,0.08)' : isUp ? 'rgba(255,77,77,0.2)' : isDown ? 'rgba(51,204,102,0.2)' : 'rgba(255,255,255,0.08)'
-                  const bgColor = isBCSI ? 'rgba(255,255,255,0.03)' : isUp ? 'rgba(255,77,77,0.06)' : isDown ? 'rgba(51,204,102,0.06)' : 'rgba(255,255,255,0.03)'
+                  const color = isBCSI ? '#9ca3af' : isFNG ? fngColor! : isUp ? '#ff4d4d' : isDown ? '#33cc66' : '#9ca3af'
+                  const borderColor = isBCSI ? 'rgba(255,255,255,0.08)'
+                    : isFNG ? `${fngColor}33`
+                    : isUp ? 'rgba(255,77,77,0.2)' : isDown ? 'rgba(51,204,102,0.2)' : 'rgba(255,255,255,0.08)'
+                  const bgColor = isBCSI ? 'rgba(255,255,255,0.03)'
+                    : isFNG ? `${fngColor}11`
+                    : isUp ? 'rgba(255,77,77,0.06)' : isDown ? 'rgba(51,204,102,0.06)' : 'rgba(255,255,255,0.03)'
                   const sign = (ind.change ?? 0) > 0 ? '+' : ''
-                  const decimals = ind.code === 'USDTWD' ? 3 : ind.code === 'US10Y' ? 3 : 2
+                  const decimals = ind.code === 'USDTWD' ? 3 : ind.code === 'US10Y' ? 3 : 1
                   return (
                     <div key={ind.code} style={{
                       background: bgColor,
@@ -1344,7 +1355,7 @@ function App() {
                     }}>
                       <div style={{ fontSize: '0.75rem', color: '#9ca3af', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '4px' }}>
                         {ind.name}
-                        {ind.unit && !isBCSI && (
+                        {ind.unit && !isBCSI && !isFNG && (
                           <span style={{ opacity: 0.5, fontSize: '0.68rem' }}>({ind.unit})</span>
                         )}
                       </div>
@@ -1357,6 +1368,22 @@ function App() {
                               🔗 國發會景氣燈號 →
                             </a>
                           )}
+                        </>
+                      ) : isFNG ? (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: fngColor!, lineHeight: 1.15 }}>
+                              {ind.price != null ? ind.price.toFixed(1) : '---'}
+                            </div>
+                            {ind.rating && (
+                              <div style={{ fontSize: '0.85rem', fontWeight: 600, color: fngColor! }}>
+                                {ind.rating}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ fontSize: '0.82rem', color: '#9ca3af' }}>
+                            {ind.change != null ? `前日 ${sign}${ind.change.toFixed(1)} 分` : '---'}
+                          </div>
                         </>
                       ) : (
                         <>

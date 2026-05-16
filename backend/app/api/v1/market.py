@@ -202,11 +202,55 @@ async def _get_usd_twd() -> dict:
     }
 
 
+async def _get_fear_greed() -> dict:
+    """CNN 恐慌貪婪指數 (Fear & Greed Index) — CNN Markets API"""
+    url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://edition.cnn.com/",
+    }
+    async with aiohttp.ClientSession() as s:
+        data = await _get(s, url, headers)
+    try:
+        fng = data["fear_and_greed"]
+        score = round(float(fng["score"]), 1)
+        rating = fng.get("rating", "")
+        # 前一天分數（用於計算變化）
+        prev_close = fng.get("previous_close")
+        prev_score = round(float(prev_close), 1) if prev_close else score
+        change = round(score - prev_score, 1)
+
+        # 評級中文化
+        rating_map = {
+            "Extreme Fear": "極度恐慌",
+            "Fear": "恐慌",
+            "Neutral": "中性",
+            "Greed": "貪婪",
+            "Extreme Greed": "極度貪婪",
+        }
+        rating_zh = rating_map.get(rating, rating)
+
+        return {
+            "name": "貪婪指數", "code": "FNG",
+            "price": score, "change": change, "change_pct": None,
+            "unit": "分", "rating": rating_zh,
+            "hint": "0=極度恐慌　100=極度貪婪",
+        }
+    except Exception:
+        pass
+    return {
+        "name": "貪婪指數", "code": "FNG",
+        "price": None, "change": None, "change_pct": None,
+        "unit": "分", "rating": None,
+        "hint": "0=極度恐慌　100=極度貪婪",
+    }
+
+
 @router.get("/macro")
 async def get_macro_indicators() -> dict:
-    """取得總體經濟指標：景氣對策信號、美債10Y殖利率、VIX、新台幣匯率"""
-    us10y, vix, usdtwd = await asyncio.gather(
-        _get_us10y(), _get_vix(), _get_usd_twd(),
+    """取得總體經濟指標：景氣對策信號、美債10Y殖利率、貪婪指數、新台幣匯率"""
+    us10y, fng, usdtwd = await asyncio.gather(
+        _get_us10y(), _get_fear_greed(), _get_usd_twd(),
     )
     # 景氣對策信號為國發會月更新資料，提供官方連結供查閱
     bcsi = {
@@ -221,5 +265,5 @@ async def get_macro_indicators() -> dict:
     }
     return {
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "indicators": [bcsi, us10y, vix, usdtwd],
+        "indicators": [bcsi, us10y, fng, usdtwd],
     }
