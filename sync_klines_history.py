@@ -256,6 +256,33 @@ async def main():
 
     success = failed = skipped = 0
 
+    def reconnect():
+        nonlocal conn, cur
+        # 先關閉舊連線
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+        # 重試邏輯：最多 5 次，等待 10/30/60/120/300 秒
+        waits = [10, 30, 60, 120, 300]
+        for attempt, wait in enumerate(waits, start=1):
+            try:
+                conn = psycopg2.connect(**DB_CONN)
+                cur  = conn.cursor()
+                logger.info(f"DB 連線已重建（第 {attempt} 次嘗試）")
+                return
+            except Exception as e:
+                if attempt < len(waits):
+                    logger.warning(f"重連第 {attempt} 次失敗: {e}，{wait}s 後再試…")
+                    import time; time.sleep(wait)
+                else:
+                    logger.error(f"重連第 {attempt} 次失敗: {e}，已達上限，放棄")
+                    raise
+
     async with aiohttp.ClientSession() as session:
         for i, (symbol, stock_id) in enumerate(stocks):
             if symbol in done_set:
@@ -264,6 +291,14 @@ async def main():
 
             if i > 0:
                 await asyncio.sleep(DELAY)
+
+            # 若連線已斷，先重連
+            if conn.closed:
+                try:
+                    reconnect()
+                except Exception as re:
+                    logger.error(f"重連失敗，中止: {re}")
+                    break
 
             try:
                 inserted, _ = await sync_stock(session, cur, conn, symbol, stock_id)
@@ -277,6 +312,14 @@ async def main():
                 else:
                     skipped += 1
                     logger.debug(f"[{i+1}/{len(stocks)}] {symbol} 無資料")
+            except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                failed += 1
+                logger.warning(f"[{i+1}/{len(stocks)}] {symbol} DB 連線中斷: {e}，嘗試重連…")
+                try:
+                    reconnect()
+                except Exception as re:
+                    logger.error(f"重連失敗，中止: {re}")
+                    break
             except Exception as e:
                 failed += 1
                 logger.error(f"[{i+1}/{len(stocks)}] {symbol} 失敗: {e}")
