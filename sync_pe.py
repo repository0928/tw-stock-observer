@@ -2,21 +2,17 @@ import requests
 import psycopg2
 import urllib3
 from datetime import datetime, timezone
+from db_utils import connect_with_retry, get_with_retry
 urllib3.disable_warnings()
 UTC = timezone.utc
 
-conn = psycopg2.connect(
-    host="43.167.191.181",
-    port=31218,
-    database="zeabur",
-    user="root",
-    password="EKo96Bj0UOc4zP2Jp53I1Rtv8H7fmrgh"
-)
+print("連線資料庫...")
+conn = connect_with_retry()
 cur = conn.cursor()
 
 # TSE: fields=[code, name, close, yield%, div_year, pe, pb, report]
 print("TSE pe/yield...")
-r = requests.get(
+r = get_with_retry(
     "https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_d?response=json",
     timeout=30, verify=False
 )
@@ -42,7 +38,7 @@ print(f"TSE done: {updated}")
 
 # TPEx: fields include YieldRatio, PriceEarningRatio, PriceBookRatio
 print("TPEx pe/yield...")
-r2 = requests.get(
+r2 = get_with_retry(
     "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_peratio_analysis",
     timeout=30, verify=False
 )

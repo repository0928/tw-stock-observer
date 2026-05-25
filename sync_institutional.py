@@ -6,17 +6,14 @@
 """
 import requests
 import psycopg2
-from datetime import datetime, UTC
+from datetime import datetime, timezone
+from db_utils import connect_with_retry, get_with_retry
 import urllib3
 urllib3.disable_warnings()
+UTC = timezone.utc  # 相容 Python 3.10（datetime.UTC 需 3.11+）
 
-conn = psycopg2.connect(
-    host="43.167.191.181",
-    port=31218,
-    database="zeabur",
-    user="root",
-    password="EKo96Bj0UOc4zP2Jp53I1Rtv8H7fmrgh"
-)
+print("連線資料庫...")
+conn = connect_with_retry()
 cur = conn.cursor()
 
 
@@ -33,7 +30,7 @@ def parse_int(val):
 
 # ==================== 上市三大法人 ====================
 print("下載上市三大法人資料...")
-r = requests.get(
+r = get_with_retry(
     "https://www.twse.com.tw/rwd/zh/fund/T86?response=json&selectType=ALL",
     timeout=30, verify=False
 )
@@ -106,7 +103,7 @@ OTC_3INSTI_URLS = [
 otc_inst_items = []
 for url in OTC_3INSTI_URLS:
     try:
-        r2 = requests.get(url, timeout=15, verify=False)
+        r2 = get_with_retry(url, timeout=15, verify=False)
         if r2.status_code == 200 and r2.text.strip().startswith('['):
             otc_inst_items = r2.json()
             print(f"  使用 URL: {url}，共 {len(otc_inst_items)} 筆")
@@ -164,7 +161,95 @@ for item in otc_inst_items:
         print(f"處理上櫃三大法人 {symbol} 失敗: {e}")
 
 conn.commit()
-cur.close()
-conn.close()
 print(f"✅ 上櫃三大法人更新: {updated2} 筆")
+
+
+# ==================== 寫入歷史表 + 計算連續買賣超天數 ====================
+print("📊 寫入法人歷史表並計算外資連續買超天數...")
+
+# 取今日日期（用已更新資料的 trade_date）
+cur2 = conn.cursor()
+cur2.execute("SELECT MAX(trade_date) FROM stocks WHERE trade_date IS NOT NULL")
+today_date = cur2.fetchone()[0] or datetime.now(UTC).strftime("%Y-%m-%d")
+print(f"  今日行情日期: {today_date}")
+
+# 查所有今日有外資資料的股票
+cur2.execute("""
+    SELECT symbol, foreign_net_buy, investment_trust_net_buy, dealer_net_buy
+    FROM stocks
+    WHERE foreign_net_buy IS NOT NULL
+      AND is_active = TRUE
+""")
+all_rows = cur2.fetchall()
+print(f"  共 {len(all_rows)} 筆有外資資料")
+
+hist_upserted = 0
+consec_updated = 0
+
+for symbol, foreign, trust, dealer in all_rows:
+    try:
+        # 寫入歷史表
+        cur2.execute("""
+            INSERT INTO stock_institutional_daily
+                (symbol, trade_date, foreign_net_buy, investment_trust_net_buy, dealer_net_buy, updated_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (symbol, trade_date) DO UPDATE SET
+                foreign_net_buy          = EXCLUDED.foreign_net_buy,
+                investment_trust_net_buy = EXCLUDED.investment_trust_net_buy,
+                dealer_net_buy           = EXCLUDED.dealer_net_buy,
+                updated_at               = NOW()
+        """, (symbol, today_date, foreign, trust, dealer))
+        hist_upserted += 1
+    except Exception as e:
+        print(f"  歷史表寫入 {symbol} 失敗: {e}")
+
+conn.commit()
+print(f"✅ 歷史表寫入: {hist_upserted} 筆")
+
+# 計算連續買賣超天數（正=連續買超天數，負=連續賣超天數）
+cur2.execute("SELECT DISTINCT symbol FROM stock_institutional_daily")
+all_hist_symbols = [r[0] for r in cur2.fetchall()]
+
+for symbol in all_hist_symbols:
+    cur2.execute("""
+        SELECT foreign_net_buy FROM stock_institutional_daily
+        WHERE symbol = %s AND foreign_net_buy IS NOT NULL
+        ORDER BY trade_date DESC
+        LIMIT 20
+    """, (symbol,))
+    history = [r[0] for r in cur2.fetchall()]  # 由新到舊
+
+    if not history:
+        continue
+
+    first = history[0]
+    if first is None:
+        continue
+
+    is_buy = first > 0
+    count = 0
+    for val in history:
+        if val is None:
+            break
+        if (val > 0) == is_buy:
+            count += 1
+        else:
+            break
+
+    consecutive = count if is_buy else -count
+
+    try:
+        cur2.execute(
+            "UPDATE stocks SET foreign_consecutive_days = %s WHERE symbol = %s",
+            (consecutive, symbol)
+        )
+        consec_updated += 1
+    except Exception:
+        pass
+
+conn.commit()
+print(f"✅ 外資連續買賣超天數更新: {consec_updated} 筆")
+
+cur2.close()
+conn.close()
 print("✅ 三大法人同步完成！")

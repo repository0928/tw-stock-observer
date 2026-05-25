@@ -2,15 +2,11 @@ import requests
 import psycopg2
 from datetime import datetime
 import urllib3
+from db_utils import connect_with_retry, get_with_retry
 urllib3.disable_warnings()
 
-conn = psycopg2.connect(
-    host="43.167.191.181",
-    port=31218,
-    database="zeabur",
-    user="root",
-    password="EKo96Bj0UOc4zP2Jp53I1Rtv8H7fmrgh"
-)
+print("連線資料庫...")
+conn = connect_with_retry()
 cur = conn.cursor()
 
 # 預先載入所有股票的流通股數，用於計算週轉率
@@ -20,7 +16,7 @@ shares_map = {row[0]: row[1] for row in cur.fetchall()}
 print(f"  已載入 {len(shares_map)} 支股票的股數資料")
 
 print("下載上市股票行情...")
-r = requests.get("https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=json", timeout=30, verify=False)
+r = get_with_retry("https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=json", timeout=30, verify=False)
 data = r.json()
 rows = data.get("data", [])
 trade_date = data.get("date", "")
@@ -90,8 +86,8 @@ otc_items = []
 otc_date = ""
 for _url in OTC_QUOTE_URLS:
     try:
-        r2 = requests.get(_url, timeout=30, verify=False,
-                          headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        r2 = get_with_retry(_url, timeout=30, verify=False,
+                            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
         body = r2.text.strip()
         if not body or body.startswith("<"):
             print(f"  {_url} -> 回傳 HTML，跳過")

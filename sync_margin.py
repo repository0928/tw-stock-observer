@@ -8,16 +8,12 @@
 import requests
 import psycopg2
 from datetime import datetime, timezone
+from db_utils import connect_with_retry, get_with_retry
 import urllib3
 urllib3.disable_warnings()
 
-conn = psycopg2.connect(
-    host="43.167.191.181",
-    port=31218,
-    database="zeabur",
-    user="root",
-    password="EKo96Bj0UOc4zP2Jp53I1Rtv8H7fmrgh"
-)
+print("連線資料庫...")
+conn = connect_with_retry()
 cur = conn.cursor()
 
 
@@ -57,7 +53,7 @@ MARGN_URLS = [
 rows = []
 for _url in MARGN_URLS:
     try:
-        r = requests.get(_url, timeout=30, verify=False, headers={"User-Agent": "Mozilla/5.0"})
+        r = get_with_retry(_url, timeout=30, verify=False, headers={"User-Agent": "Mozilla/5.0"})
         body = r.text.strip()
         if not body or body.startswith("<"):
             print(f"  {_url} -> 非 JSON，跳過")
@@ -151,9 +147,9 @@ OTC_MARGIN_URLS = [
 otc_rows = []
 for url in OTC_MARGIN_URLS:
     try:
-        r2 = requests.get(url, timeout=20, verify=False,
-                          headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json",
-                                   "Referer": "https://www.tpex.org.tw/"})
+        r2 = get_with_retry(url, timeout=20, verify=False,
+                            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json",
+                                     "Referer": "https://www.tpex.org.tw/"})
         if r2.status_code != 200:
             print(f"  {url} -> HTTP {r2.status_code}，跳過")
             continue
