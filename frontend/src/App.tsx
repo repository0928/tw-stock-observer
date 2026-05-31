@@ -864,46 +864,73 @@ function App() {
         maSeries.push({ label, color, data: maData, series: lineSeries })
       })
 
-      // 建立圖例 DOM
-      const legendEl = document.createElement('div')
-      legendEl.style.cssText = 'position:absolute;top:8px;left:12px;display:flex;gap:10px;flex-wrap:wrap;z-index:10;pointer-events:none;'
-      klineChartRef.current!.style.position = 'relative'
-      klineChartRef.current!.appendChild(legendEl)
+      // 建立圖例 DOM（上方兩行：OHLC + 均線）
+      const wrapper = klineChartRef.current!
+      wrapper.style.position = 'relative'
 
-      const updateLegend = (_closeVal: number | null) => {
-        legendEl.innerHTML = maSeries.map(({ label, color, data }) => {
-          const last = data[data.length - 1]?.value ?? null
-          const prev = data[data.length - 2]?.value ?? null
-          if (last === null) return ''
-          const arrow = prev === null ? '' : last > prev ? ' ▲' : last < prev ? ' ▼' : ' ─'
-          const arrowColor = prev === null ? color : last > prev ? '#26a69a' : last < prev ? '#ef5350' : '#aaa'
-          return `<span style="font-size:0.75rem;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,0.55);border:1px solid ${color}40">` +
-            `<span style="color:${color};font-weight:600">${label}</span>` +
-            `<span style="color:#ddd;margin-left:4px">${last.toFixed(2)}</span>` +
-            `<span style="color:${arrowColor};margin-left:2px">${arrow}</span>` +
-            `</span>`
-        }).join('')
+      const ohlcEl = document.createElement('div')
+      ohlcEl.style.cssText = 'position:absolute;top:8px;left:12px;right:12px;z-index:10;pointer-events:none;font-size:0.75rem;color:#ccc;line-height:1.6;'
+      wrapper.appendChild(ohlcEl)
+
+      const maLegendEl = document.createElement('div')
+      maLegendEl.style.cssText = 'position:absolute;top:30px;left:12px;display:flex;gap:8px;flex-wrap:wrap;z-index:10;pointer-events:none;'
+      wrapper.appendChild(maLegendEl)
+
+      const renderOHLC = (d: string, o: number, h: number, lo: number, c: number) => {
+        const chg = c - o
+        const chgColor = chg >= 0 ? '#26a69a' : '#ef5350'
+        ohlcEl.innerHTML =
+          `<span style="color:#aaa;margin-right:8px">${d}</span>` +
+          `<span style="margin-right:6px">開 <b style="color:#ddd">${o.toFixed(2)}</b></span>` +
+          `<span style="margin-right:6px">高 <b style="color:#26a69a">${h.toFixed(2)}</b></span>` +
+          `<span style="margin-right:6px">低 <b style="color:#ef5350">${lo.toFixed(2)}</b></span>` +
+          `<span style="margin-right:6px">收 <b style="color:${chgColor}">${c.toFixed(2)}</b></span>` +
+          `<span style="color:${chgColor}">${chg >= 0 ? '▲' : '▼'} ${Math.abs(chg).toFixed(2)} (${Math.abs(chg/o*100).toFixed(2)}%)</span>`
       }
-      updateLegend(null)
 
-      // 十字線移動時更新圖例
-      chart.subscribeCrosshairMove((param: any) => {
-        if (!param || !param.time) { updateLegend(null); return }
-        updateLegend(null)
-        legendEl.innerHTML = maSeries.map(({ label, color, data, series }) => {
-          const val = param.seriesData?.get(series)?.value ?? null
+      const renderMA = (dataMap: Map<any,number|null>) => {
+        maLegendEl.innerHTML = maSeries.map(({ label, color, data, series }) => {
+          const val: number | null = dataMap.get(series) ?? null
           const last = data[data.length - 1]?.value ?? null
           const prev = data[data.length - 2]?.value ?? null
           const display = val ?? last
           if (display === null) return ''
-          const arrow = prev === null ? '' : (last ?? 0) > prev ? ' ▲' : (last ?? 0) < prev ? ' ▼' : ' ─'
-          const arrowColor = prev === null ? color : (last ?? 0) > prev ? '#26a69a' : (last ?? 0) < prev ? '#ef5350' : '#aaa'
-          return `<span style="font-size:0.75rem;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,0.55);border:1px solid ${color}40">` +
+          const arrow = prev === null ? '' : (last??0) > prev ? ' ▲' : (last??0) < prev ? ' ▼' : ' ─'
+          const arrowColor = prev === null ? color : (last??0) > prev ? '#26a69a' : (last??0) < prev ? '#ef5350' : '#aaa'
+          return `<span style="font-size:0.73rem;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,0.6);border:1px solid ${color}50">` +
             `<span style="color:${color};font-weight:600">${label}</span>` +
             `<span style="color:#ddd;margin-left:4px">${(display as number).toFixed(2)}</span>` +
             `<span style="color:${arrowColor};margin-left:2px">${arrow}</span>` +
             `</span>`
         }).join('')
+      }
+
+      // 預設顯示最新一根 K 棒
+      const lastK = klineData[klineData.length - 1]
+      if (lastK) {
+        renderOHLC(lastK.date, parseFloat(lastK.open), parseFloat(lastK.high), parseFloat(lastK.low), parseFloat(lastK.close))
+      }
+      renderMA(new Map())
+
+      // 十字線移動時更新
+      chart.subscribeCrosshairMove((param: any) => {
+        if (!param || !param.time) {
+          if (lastK) renderOHLC(lastK.date, parseFloat(lastK.open), parseFloat(lastK.high), parseFloat(lastK.low), parseFloat(lastK.close))
+          renderMA(new Map())
+          return
+        }
+        // OHLC
+        const bar = param.seriesData?.get(candleSeries)
+        if (bar) {
+          renderOHLC(String(param.time), bar.open, bar.high, bar.low, bar.close)
+        }
+        // 均線值
+        const maMap = new Map<any, number | null>()
+        maSeries.forEach(({ series: s }) => {
+          const v = param.seriesData?.get(s)
+          maMap.set(s, v?.value ?? null)
+        })
+        renderMA(maMap)
       })
 
       chart.timeScale().fitContent()
