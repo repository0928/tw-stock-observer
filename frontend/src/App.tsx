@@ -782,6 +782,67 @@ function App() {
   const [announcements, setAnnouncements] = useState<Announcement[]>([])
   const [annLoading, setAnnLoading] = useState(false)
 
+  // ── K 線 Modal ────────────────────────────────────────────────────────────
+  const [klineModal, setKlineModal] = useState<{ symbol: string; name: string } | null>(null)
+  const [klineData, setKlineData] = useState<any[]>([])
+  const [klineLoading, setKlineLoading] = useState(false)
+  const klineChartRef = useRef<HTMLDivElement>(null)
+  const klineChartInstance = useRef<any>(null)
+
+  const openKlineModal = useCallback(async (symbol: string, name: string) => {
+    setKlineModal({ symbol, name })
+    setKlineData([])
+    setKlineLoading(true)
+    try {
+      const res = await fetch(`${API_URL}/v1/stocks/${symbol}/klines?limit=200`)
+      if (res.ok) {
+        const json = await res.json()
+        setKlineData(json.klines || [])
+      }
+    } catch {}
+    setKlineLoading(false)
+  }, [])
+
+  useEffect(() => {
+    if (!klineModal || klineLoading || !klineChartRef.current || klineData.length === 0) return
+    const initChart = () => {
+      if (klineChartInstance.current) { klineChartInstance.current.remove(); klineChartInstance.current = null }
+      const LW = (window as any).LightweightCharts
+      if (!LW) return
+      const chart = LW.createChart(klineChartRef.current!, {
+        layout: { background: { color: '#1a1d2e' }, textColor: '#aaa' },
+        grid: { vertLines: { color: '#2a2d3e' }, horzLines: { color: '#2a2d3e' } },
+        width: klineChartRef.current!.clientWidth,
+        height: 360,
+        timeScale: { borderColor: '#2a2d3e' },
+        rightPriceScale: { borderColor: '#2a2d3e' },
+      })
+      const candleSeries = chart.addCandlestickSeries({
+        upColor: '#26a69a', downColor: '#ef5350',
+        borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+        wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+      })
+      candleSeries.setData(klineData.map((k: any) => ({
+        time: k.date,
+        open: parseFloat(k.open),
+        high: parseFloat(k.high),
+        low: parseFloat(k.low),
+        close: parseFloat(k.close),
+      })))
+      chart.timeScale().fitContent()
+      klineChartInstance.current = chart
+    }
+    if ((window as any).LightweightCharts) {
+      initChart()
+    } else {
+      const s = document.createElement('script')
+      s.src = 'https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js'
+      s.onload = initChart
+      document.head.appendChild(s)
+    }
+    return () => { if (klineChartInstance.current) { klineChartInstance.current.remove(); klineChartInstance.current = null } }
+  }, [klineData, klineModal, klineLoading])
+
   const openAnnouncements = useCallback(async (symbol: string, name: string) => {
     setAnnModal({ symbol, name })
     setAnnouncements([])
@@ -1084,6 +1145,10 @@ function App() {
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
           <span style={{ color: '#f90', fontWeight: 600 }}>{s.symbol}</span>
           <span style={{ display: 'inline-flex', gap: '3px' }}>
+            <button
+              onClick={() => openKlineModal(s.symbol, s.name)}
+              title="K 線圖"
+              style={{ fontSize: '0.65rem', padding: '1px 5px', background: 'rgba(255,165,0,0.15)', color: '#ffa500', border: '1px solid rgba(255,165,0,0.3)', borderRadius: '3px', cursor: 'pointer', lineHeight: 1.5 }}>📈</button>
             <a href={`https://tw.tradingview.com/chart/?symbol=TWSE%3A${s.symbol}`} target="_blank" rel="noreferrer"
               title="TradingView 技術面" style={{ fontSize: '0.65rem', padding: '1px 5px', background: 'rgba(56,139,253,0.15)', color: '#6ea8fe', border: '1px solid rgba(56,139,253,0.25)', borderRadius: '3px', textDecoration: 'none', lineHeight: 1.5 }}>TV</a>
             <a href={`https://goodinfo.tw/tw/StockInfo.asp?STOCK_ID=${s.symbol}`} target="_blank" rel="noreferrer"
@@ -1799,6 +1864,40 @@ function App() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+      {/* ── K 線 Modal ── */}
+      {klineModal && (
+        <div
+          onClick={() => setKlineModal(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1001, padding: '20px' }}>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background: '#1a1d2e', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '10px', padding: '20px 24px', width: '100%', maxWidth: '860px', boxShadow: '0 12px 48px rgba(0,0,0,0.6)' }}>
+            {/* 標題列 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div>
+                <span style={{ color: '#ffa500', fontWeight: 700, marginRight: '8px' }}>{klineModal.symbol}</span>
+                <span style={{ color: '#fff', fontWeight: 600 }}>{klineModal.name}</span>
+                <span style={{ color: '#555', fontSize: '0.82rem', marginLeft: '8px' }}>日 K 線</span>
+              </div>
+              <button onClick={() => setKlineModal(null)}
+                style={{ background: 'transparent', border: 'none', color: '#666', cursor: 'pointer', fontSize: '1.2rem', lineHeight: 1, padding: '2px 6px' }}>✕</button>
+            </div>
+            {/* 圖表區 */}
+            {klineLoading && (
+              <div style={{ textAlign: 'center', padding: '3rem', color: '#666' }}>⏳ 載入 K 線資料中...</div>
+            )}
+            {!klineLoading && klineData.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '3rem', color: '#555' }}>
+                <div style={{ fontSize: '1.5rem', marginBottom: '6px' }}>📭</div>
+                尚無 K 線資料
+              </div>
+            )}
+            {!klineLoading && klineData.length > 0 && (
+              <div ref={klineChartRef} style={{ width: '100%', borderRadius: '6px', overflow: 'hidden' }} />
+            )}
           </div>
         </div>
       )}
