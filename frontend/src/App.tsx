@@ -845,21 +845,65 @@ function App() {
         close: parseFloat(k.close),
       })))
 
-      // 均線
+      // 均線 + 自訂圖例
       const maConfigs = [
-        { period: 5,  color: '#f6c90e', title: 'MA5'  },
-        { period: 10, color: '#f97316', title: 'MA10' },
-        { period: 20, color: '#3b82f6', title: 'MA20' },
-        { period: 60, color: '#a855f7', title: 'MA60' },
+        { period: 5,  color: '#f6c90e', label: 'MA5'  },
+        { period: 10, color: '#f97316', label: 'MA10' },
+        { period: 20, color: '#3b82f6', label: 'MA20' },
+        { period: 60, color: '#a855f7', label: 'MA60' },
       ]
-      maConfigs.forEach(({ period, color, title }) => {
+      const maSeries: { label: string; color: string; data: {time:string;value:number}[]; series: any }[] = []
+      maConfigs.forEach(({ period, color, label }) => {
         const maData = calcMA(klineData, period)
         if (maData.length === 0) return
         const lineSeries = chart.addLineSeries({
-          color, lineWidth: 1, title,
-          priceLineVisible: false, lastValueVisible: false,
+          color, lineWidth: 1,
+          priceLineVisible: false, lastValueVisible: false, title: '',
         })
         lineSeries.setData(maData)
+        maSeries.push({ label, color, data: maData, series: lineSeries })
+      })
+
+      // 建立圖例 DOM
+      const legendEl = document.createElement('div')
+      legendEl.style.cssText = 'position:absolute;top:8px;left:12px;display:flex;gap:10px;flex-wrap:wrap;z-index:10;pointer-events:none;'
+      klineChartRef.current!.style.position = 'relative'
+      klineChartRef.current!.appendChild(legendEl)
+
+      const updateLegend = (_closeVal: number | null) => {
+        legendEl.innerHTML = maSeries.map(({ label, color, data }) => {
+          const last = data[data.length - 1]?.value ?? null
+          const prev = data[data.length - 2]?.value ?? null
+          if (last === null) return ''
+          const arrow = prev === null ? '' : last > prev ? ' ▲' : last < prev ? ' ▼' : ' ─'
+          const arrowColor = prev === null ? color : last > prev ? '#26a69a' : last < prev ? '#ef5350' : '#aaa'
+          return `<span style="font-size:0.75rem;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,0.55);border:1px solid ${color}40">` +
+            `<span style="color:${color};font-weight:600">${label}</span>` +
+            `<span style="color:#ddd;margin-left:4px">${last.toFixed(2)}</span>` +
+            `<span style="color:${arrowColor};margin-left:2px">${arrow}</span>` +
+            `</span>`
+        }).join('')
+      }
+      updateLegend(null)
+
+      // 十字線移動時更新圖例
+      chart.subscribeCrosshairMove((param: any) => {
+        if (!param || !param.time) { updateLegend(null); return }
+        updateLegend(null)
+        legendEl.innerHTML = maSeries.map(({ label, color, data, series }) => {
+          const val = param.seriesData?.get(series)?.value ?? null
+          const last = data[data.length - 1]?.value ?? null
+          const prev = data[data.length - 2]?.value ?? null
+          const display = val ?? last
+          if (display === null) return ''
+          const arrow = prev === null ? '' : (last ?? 0) > prev ? ' ▲' : (last ?? 0) < prev ? ' ▼' : ' ─'
+          const arrowColor = prev === null ? color : (last ?? 0) > prev ? '#26a69a' : (last ?? 0) < prev ? '#ef5350' : '#aaa'
+          return `<span style="font-size:0.75rem;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,0.55);border:1px solid ${color}40">` +
+            `<span style="color:${color};font-weight:600">${label}</span>` +
+            `<span style="color:#ddd;margin-left:4px">${(display as number).toFixed(2)}</span>` +
+            `<span style="color:${arrowColor};margin-left:2px">${arrow}</span>` +
+            `</span>`
+        }).join('')
       })
 
       chart.timeScale().fitContent()
