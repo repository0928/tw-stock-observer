@@ -601,63 +601,11 @@ async def screener_gross_margin_rising(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
-    篩選：最近 N 季毛利率均 ≥ min_margin，且逐季嚴格遞增。
-    使用單一 SQL Window Function，避免 N+1 查詢問題。
+    篩選：毛利率逐季遞增（結果來自每日快取，預設 min_margin=30, quarters=4）。
     """
-    from sqlalchemy import text
-
     try:
-        # 單一 SQL：用 ROW_NUMBER() 取各股最近 N 季，再做 PIVOT + 過濾
-        sql = text("""
-            WITH ranked AS (
-                SELECT symbol, year, quarter, gross_margin,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY symbol
-                           ORDER BY year DESC, quarter DESC
-                       ) AS rn
-                FROM stock_quarterly_financials
-                WHERE gross_margin IS NOT NULL
-            ),
-            pivoted AS (
-                SELECT
-                    symbol,
-                    COUNT(*)                                             AS cnt,
-                    MIN(gross_margin)                                    AS min_gm,
-                    MAX(CASE WHEN rn = 1 THEN gross_margin END)         AS gm1,
-                    MAX(CASE WHEN rn = 2 THEN gross_margin END)         AS gm2,
-                    MAX(CASE WHEN rn = 3 THEN gross_margin END)         AS gm3,
-                    MAX(CASE WHEN rn = 4 THEN gross_margin END)         AS gm4,
-                    MAX(CASE WHEN rn = 5 THEN gross_margin END)         AS gm5,
-                    MAX(CASE WHEN rn = 6 THEN gross_margin END)         AS gm6,
-                    MAX(CASE WHEN rn = 7 THEN gross_margin END)         AS gm7,
-                    MAX(CASE WHEN rn = 8 THEN gross_margin END)         AS gm8
-                FROM ranked
-                WHERE rn <= :quarters
-                GROUP BY symbol
-            )
-            SELECT symbol, gm1, gm2, gm3, gm4, gm5, gm6, gm7, gm8
-            FROM pivoted
-            WHERE cnt = :quarters
-              AND min_gm >= :min_margin
-        """)
-        res = await db.execute(sql, {"quarters": quarters, "min_margin": min_margin})
-        candidates = res.fetchall()
-
-        matched_symbols = []
-        for row in candidates:
-            sym = row[0]
-            gms = [row[i+1] for i in range(quarters) if row[i+1] is not None]
-            if len(gms) < quarters:
-                continue
-            gms_f = [float(g) for g in gms]
-            # 嚴格遞增（gm1 最新，gm2 次新，…）
-            if all(gms_f[i] > gms_f[i+1] for i in range(len(gms_f)-1)):
-                matched_symbols.append(sym)
-
-        return {
-            "count": len(matched_symbols),
-            "symbols": matched_symbols,
-        }
+        symbols = await _read_cache(db, "gross_margin_rising")
+        return {"count": len(symbols), "symbols": symbols}
     except Exception as e:
         logger.error(f"screener gross-margin-rising 失敗: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
@@ -668,59 +616,10 @@ async def screener_net_income_outpace_revenue(
     quarters: int = Query(1, ge=1, le=4, description="最近幾季均需符合（預設 1 = 最新季）"),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    篩選：淨利年增率 > 營收年增率（利潤率擴張）。
-    使用單一 SQL，自我 JOIN 取得去年同季，避免 N+1 查詢問題。
-    """
-    from sqlalchemy import text
-
+    """篩選：淨利年增率 > 營收年增率（結果來自每日快取）。"""
     try:
-        # 單一 SQL：self-join 取各股最新 N 季及去年同季，計算 YoY 並比較
-        sql = text("""
-            WITH ranked AS (
-                SELECT symbol, year, quarter, net_income, revenue,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY symbol
-                           ORDER BY year DESC, quarter DESC
-                       ) AS rn
-                FROM stock_quarterly_financials
-                WHERE net_income IS NOT NULL AND revenue IS NOT NULL
-            ),
-            recent AS (
-                SELECT r.symbol, r.year, r.quarter, r.net_income, r.revenue, r.rn,
-                       p.net_income AS prev_ni, p.revenue AS prev_rev
-                FROM ranked r
-                JOIN stock_quarterly_financials p
-                  ON p.symbol = r.symbol
-                 AND p.year   = r.year - 1
-                 AND p.quarter = r.quarter
-                 AND p.net_income IS NOT NULL
-                 AND p.revenue IS NOT NULL
-                WHERE r.rn <= :quarters
-                  AND p.net_income <> 0
-                  AND p.revenue    <> 0
-            ),
-            check_pass AS (
-                SELECT symbol,
-                       COUNT(*) AS matched_qtrs,
-                       BOOL_AND(
-                           (r.net_income - r.prev_ni) / ABS(r.prev_ni)
-                           > (r.revenue - r.prev_rev) / ABS(r.prev_rev)
-                       ) AS all_pass
-                FROM recent r
-                GROUP BY symbol
-            )
-            SELECT symbol
-            FROM check_pass
-            WHERE matched_qtrs = :quarters AND all_pass = TRUE
-        """)
-        res = await db.execute(sql, {"quarters": quarters})
-        matched_symbols = [row[0] for row in res.fetchall()]
-
-        return {
-            "count": len(matched_symbols),
-            "symbols": matched_symbols,
-        }
+        symbols = await _read_cache(db, "net_income_outpace_revenue")
+        return {"count": len(symbols), "symbols": symbols}
     except Exception as e:
         logger.error(f"screener net-income-outpace-revenue 失敗: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
@@ -732,75 +631,10 @@ async def screener_contract_liabilities_growth(
     consecutive: int = Query(3, ge=2, le=8, description="連續季增幾季（條件 A）"),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    篩選：合約負債「連續 N 季增加（條件 A）」OR「單季 QoQ ≥ min_qoq_pct%（條件 B）」。
-    使用單一 SQL Window Function，避免 N+1 查詢問題。
-    """
-    from sqlalchemy import text
-
+    """篩選：合約負債連續增加或單季大增（結果來自每日快取）。"""
     try:
-        need = consecutive + 1  # 連續判斷需多取 1 季作為起始基準
-
-        sql = text("""
-            WITH ranked AS (
-                SELECT symbol, year, quarter, contract_liabilities,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY symbol
-                           ORDER BY year DESC, quarter DESC
-                       ) AS rn
-                FROM stock_quarterly_financials
-                WHERE contract_liabilities IS NOT NULL
-            ),
-            pivoted AS (
-                SELECT
-                    symbol,
-                    COUNT(*)                                                     AS cnt,
-                    MAX(CASE WHEN rn = 1 THEN contract_liabilities END)          AS cl1,
-                    MAX(CASE WHEN rn = 2 THEN contract_liabilities END)          AS cl2,
-                    MAX(CASE WHEN rn = 3 THEN contract_liabilities END)          AS cl3,
-                    MAX(CASE WHEN rn = 4 THEN contract_liabilities END)          AS cl4,
-                    MAX(CASE WHEN rn = 5 THEN contract_liabilities END)          AS cl5,
-                    MAX(CASE WHEN rn = 6 THEN contract_liabilities END)          AS cl6,
-                    MAX(CASE WHEN rn = 7 THEN contract_liabilities END)          AS cl7,
-                    MAX(CASE WHEN rn = 8 THEN contract_liabilities END)          AS cl8,
-                    MAX(CASE WHEN rn = 9 THEN contract_liabilities END)          AS cl9
-                FROM ranked
-                WHERE rn <= :need
-                GROUP BY symbol
-            )
-            SELECT symbol, cl1, cl2, cl3, cl4, cl5, cl6, cl7, cl8, cl9
-            FROM pivoted
-            WHERE cnt >= 2 AND cl1 IS NOT NULL AND cl2 IS NOT NULL
-        """)
-        res = await db.execute(sql, {"need": need})
-        candidates = res.fetchall()
-
-        matched_symbols = []
-        for row in candidates:
-            sym = row[0]
-            # collect available cl values (cl1=newest)
-            cl_vals = [float(row[i+1]) for i in range(need) if row[i+1] is not None]
-            if len(cl_vals) < 2:
-                continue
-
-            # 條件 B：最新一季 QoQ ≥ min_qoq_pct
-            cond_b = False
-            if cl_vals[1] != 0:
-                qoq = (cl_vals[0] - cl_vals[1]) / abs(cl_vals[1]) * 100
-                cond_b = qoq >= min_qoq_pct
-
-            # 條件 A：連續 consecutive 季嚴格遞增
-            cond_a = False
-            if len(cl_vals) >= consecutive + 1:
-                cond_a = all(cl_vals[i] > cl_vals[i+1] for i in range(consecutive))
-
-            if cond_a or cond_b:
-                matched_symbols.append(sym)
-
-        return {
-            "count": len(matched_symbols),
-            "symbols": matched_symbols,
-        }
+        symbols = await _read_cache(db, "contract_liabilities_growth")
+        return {"count": len(symbols), "symbols": symbols}
     except Exception as e:
         logger.error(f"screener contract-liabilities-growth 失敗: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
@@ -935,64 +769,11 @@ async def screener_operating_margin_rising(
     quarters: int = Query(4, ge=2, le=8, description="需要連續幾季"),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    篩選：最近 N 季營業利益率均 ≥ min_margin，且逐季嚴格遞增（走勢向上）。
-    邏輯與 gross-margin-rising 相同，使用 stock_quarterly_financials.operating_margin。
-    """
-    from sqlalchemy import text
-
+    """篩選：營業利益率逐季遞增（結果來自每日快取，預設 min_margin=10, quarters=4）。"""
     try:
-        sql = text("""
-            WITH ranked AS (
-                SELECT symbol, year, quarter, operating_margin,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY symbol
-                           ORDER BY year DESC, quarter DESC
-                       ) AS rn
-                FROM stock_quarterly_financials
-                WHERE operating_margin IS NOT NULL
-            ),
-            pivoted AS (
-                SELECT
-                    symbol,
-                    COUNT(*)                                                AS cnt,
-                    MIN(operating_margin)                                   AS min_om,
-                    MAX(CASE WHEN rn = 1 THEN operating_margin END)         AS om1,
-                    MAX(CASE WHEN rn = 2 THEN operating_margin END)         AS om2,
-                    MAX(CASE WHEN rn = 3 THEN operating_margin END)         AS om3,
-                    MAX(CASE WHEN rn = 4 THEN operating_margin END)         AS om4,
-                    MAX(CASE WHEN rn = 5 THEN operating_margin END)         AS om5,
-                    MAX(CASE WHEN rn = 6 THEN operating_margin END)         AS om6,
-                    MAX(CASE WHEN rn = 7 THEN operating_margin END)         AS om7,
-                    MAX(CASE WHEN rn = 8 THEN operating_margin END)         AS om8
-                FROM ranked
-                WHERE rn <= :quarters
-                GROUP BY symbol
-            )
-            SELECT symbol, om1, om2, om3, om4, om5, om6, om7, om8
-            FROM pivoted
-            WHERE cnt = :quarters
-              AND min_om >= :min_margin
-        """)
-        res = await db.execute(sql, {"quarters": quarters, "min_margin": min_margin})
-        candidates = res.fetchall()
-
-        matched_symbols = []
-        for row in candidates:
-            sym = row[0]
-            oms = [row[i + 1] for i in range(quarters) if row[i + 1] is not None]
-            if len(oms) < quarters:
-                continue
-            oms_f = [float(o) for o in oms]
-            # 嚴格遞增（om1 最新，om2 次新，…）
-            if all(oms_f[i] > oms_f[i + 1] for i in range(len(oms_f) - 1)):
-                matched_symbols.append(sym)
-
-        return {
-            "count": len(matched_symbols),
-            "symbols": matched_symbols,
-            "criteria": {"min_margin": min_margin, "quarters": quarters},
-        }
+        symbols = await _read_cache(db, "operating_margin_rising")
+        return {"count": len(symbols), "symbols": symbols,
+                "criteria": {"min_margin": min_margin, "quarters": quarters}}
     except Exception as e:
         logger.error(f"screener operating-margin-rising 失敗: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
@@ -1004,44 +785,11 @@ async def screener_revenue_yoy_consecutive(
     min_yoy: float = Query(0.0, description="年增率下限（%，預設 0 即為正成長）"),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    篩選：月營收年增率連續 N 個月 ≥ min_yoy%。
-    使用 stock_revenue_monthly 表，單一 SQL Window Function。
-    """
-    from sqlalchemy import text
-
+    """篩選：月營收年增率連續正成長（結果來自每日快取，預設 months=3, min_yoy=0）。"""
     try:
-        sql = text("""
-            WITH ranked AS (
-                SELECT symbol, year_month, revenue_yoy,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY symbol
-                           ORDER BY year_month DESC
-                       ) AS rn
-                FROM stock_revenue_monthly
-                WHERE revenue_yoy IS NOT NULL
-            ),
-            check_pass AS (
-                SELECT symbol,
-                       COUNT(*)                              AS cnt,
-                       BOOL_AND(revenue_yoy >= :min_yoy)    AS all_pass
-                FROM ranked
-                WHERE rn <= :months
-                GROUP BY symbol
-            )
-            SELECT symbol
-            FROM check_pass
-            WHERE cnt = :months AND all_pass = TRUE
-            ORDER BY symbol
-        """)
-        res = await db.execute(sql, {"months": months, "min_yoy": min_yoy})
-        matched_symbols = [row[0] for row in res.fetchall()]
-
-        return {
-            "count": len(matched_symbols),
-            "symbols": matched_symbols,
-            "criteria": {"months": months, "min_yoy": min_yoy},
-        }
+        symbols = await _read_cache(db, "revenue_yoy_consecutive")
+        return {"count": len(symbols), "symbols": symbols,
+                "criteria": {"months": months, "min_yoy": min_yoy}}
     except Exception as e:
         logger.error(f"screener revenue-yoy-consecutive 失敗: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
@@ -1051,46 +799,25 @@ if __name__ == "__main__":
     print("✅ 股票 API 路由已載入")
 
 
-# ── 技術面篩選端點 ─────────────────────────────────────────────────────────────
+# ── 技術面篩選端點（從 screener_cache 讀取，不即時跑重型查詢） ─────────────────
+
+async def _read_cache(db: AsyncSession, screener_type: str) -> list[str]:
+    """從 screener_cache 讀取指定篩選器的 symbol 清單。"""
+    from sqlalchemy import text
+    res = await db.execute(
+        text("SELECT symbol FROM screener_cache WHERE screener_type = :t ORDER BY symbol"),
+        {"t": screener_type},
+    )
+    return [r[0] for r in res.fetchall()]
+
 
 @router.get("/screener/ma20-breakout")
 async def screener_ma20_breakout(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    篩選：股價站上 MA20（最新收盤 > SMA20，且 5 日內有穿越）。
-    """
-    from sqlalchemy import text
+    """篩選：股價站上 MA20（結果來自每日快取）。"""
     try:
-        sql = text("""
-            WITH latest AS (
-                SELECT DISTINCT ON (symbol)
-                    symbol, date, close, sma_20
-                FROM klines_daily
-                WHERE sma_20 IS NOT NULL
-                ORDER BY symbol, date DESC
-            ),
-            prev5 AS (
-                SELECT k.symbol,
-                       BOOL_OR(k.close <= k.sma_20) AS had_below
-                FROM klines_daily k
-                JOIN (
-                    SELECT symbol, date AS latest_date
-                    FROM latest
-                ) l ON k.symbol = l.symbol
-                WHERE k.date >= (l.latest_date::date - INTERVAL '5 days')::text
-                  AND k.date < l.latest_date
-                GROUP BY k.symbol
-            )
-            SELECT l.symbol
-            FROM latest l
-            JOIN prev5 p ON l.symbol = p.symbol
-            WHERE l.close > l.sma_20
-              AND p.had_below = TRUE
-            ORDER BY l.symbol
-        """)
-        res = await db.execute(sql)
-        symbols = [r[0] for r in res.fetchall()]
+        symbols = await _read_cache(db, "ma20_breakout")
         return {"count": len(symbols), "symbols": symbols, "criteria": {"type": "ma20_breakout"}}
     except Exception as e:
         logger.error(f"screener ma20-breakout 失敗: {e}")
@@ -1101,20 +828,9 @@ async def screener_ma20_breakout(
 async def screener_ma60_above(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    篩選：收盤站上 MA60（多頭格局）。
-    """
-    from sqlalchemy import text
+    """篩選：收盤站上 MA60（結果來自每日快取）。"""
     try:
-        sql = text("""
-            SELECT DISTINCT ON (symbol) symbol
-            FROM klines_daily
-            WHERE sma_50 IS NOT NULL
-              AND close > sma_50
-            ORDER BY symbol, date DESC
-        """)
-        res = await db.execute(sql)
-        symbols = [r[0] for r in res.fetchall()]
+        symbols = await _read_cache(db, "ma60_above")
         return {"count": len(symbols), "symbols": symbols, "criteria": {"type": "ma60_above"}}
     except Exception as e:
         logger.error(f"screener ma60-above 失敗: {e}")
@@ -1126,25 +842,11 @@ async def screener_rsi_oversold(
     threshold: float = Query(30.0, ge=10.0, le=45.0, description="RSI 超賣門檻（預設 30）"),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    篩選：RSI14 低於門檻（超賣訊號）。
-    """
-    from sqlalchemy import text
+    """篩選：RSI14 低於門檻（結果來自每日快取，門檻固定 30）。"""
     try:
-        sql = text("""
-            SELECT DISTINCT ON (symbol) symbol, rsi_14
-            FROM klines_daily
-            WHERE rsi_14 IS NOT NULL
-              AND rsi_14 < :threshold
-            ORDER BY symbol, date DESC
-        """)
-        res = await db.execute(sql, {"threshold": threshold})
-        rows = res.fetchall()
-        symbols = [r[0] for r in rows]
-        return {
-            "count": len(symbols), "symbols": symbols,
-            "criteria": {"type": "rsi_oversold", "threshold": threshold},
-        }
+        symbols = await _read_cache(db, "rsi_oversold")
+        return {"count": len(symbols), "symbols": symbols,
+                "criteria": {"type": "rsi_oversold", "threshold": threshold}}
     except Exception as e:
         logger.error(f"screener rsi-oversold 失敗: {e}")
         raise HTTPException(status_code=500, detail="伺服器錯誤")
@@ -1154,34 +856,9 @@ async def screener_rsi_oversold(
 async def screener_macd_bullish(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    篩選：MACD 柱狀圖由負轉正（近 3 日內翻多）。
-    """
-    from sqlalchemy import text
+    """篩選：MACD 由負轉正（結果來自每日快取）。"""
     try:
-        sql = text("""
-            WITH ranked AS (
-                SELECT symbol, date, macd_histogram,
-                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
-                FROM klines_daily
-                WHERE macd_histogram IS NOT NULL
-            ),
-            check_flip AS (
-                SELECT symbol,
-                       MAX(CASE WHEN rn = 1 THEN macd_histogram END) AS today_hist,
-                       MAX(CASE WHEN rn BETWEEN 2 AND 3 THEN macd_histogram END) AS prev_hist
-                FROM ranked
-                WHERE rn <= 3
-                GROUP BY symbol
-            )
-            SELECT symbol
-            FROM check_flip
-            WHERE today_hist > 0
-              AND prev_hist <= 0
-            ORDER BY symbol
-        """)
-        res = await db.execute(sql)
-        symbols = [r[0] for r in res.fetchall()]
+        symbols = await _read_cache(db, "macd_bullish")
         return {"count": len(symbols), "symbols": symbols, "criteria": {"type": "macd_bullish"}}
     except Exception as e:
         logger.error(f"screener macd-bullish 失敗: {e}")
@@ -1192,37 +869,9 @@ async def screener_macd_bullish(
 async def screener_golden_cross(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """
-    篩選：MA20 在近 5 日穿越 MA50（黃金交叉）。
-    """
-    from sqlalchemy import text
+    """篩選：MA20 穿越 MA50 黃金交叉（結果來自每日快取）。"""
     try:
-        sql = text("""
-            WITH ranked AS (
-                SELECT symbol, date, sma_20, sma_50,
-                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
-                FROM klines_daily
-                WHERE sma_20 IS NOT NULL AND sma_50 IS NOT NULL
-            ),
-            latest AS (
-                SELECT symbol,
-                       MAX(CASE WHEN rn = 1 THEN sma_20 END) AS ma20_now,
-                       MAX(CASE WHEN rn = 1 THEN sma_50 END) AS ma50_now,
-                       MAX(CASE WHEN rn BETWEEN 2 AND 5 THEN
-                           CASE WHEN sma_20 <= sma_50 THEN 1 ELSE 0 END
-                       END) AS had_below
-                FROM ranked
-                WHERE rn <= 5
-                GROUP BY symbol
-            )
-            SELECT symbol
-            FROM latest
-            WHERE ma20_now > ma50_now
-              AND had_below = 1
-            ORDER BY symbol
-        """)
-        res = await db.execute(sql)
-        symbols = [r[0] for r in res.fetchall()]
+        symbols = await _read_cache(db, "golden_cross")
         return {"count": len(symbols), "symbols": symbols, "criteria": {"type": "golden_cross"}}
     except Exception as e:
         logger.error(f"screener golden-cross 失敗: {e}")

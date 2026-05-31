@@ -206,9 +206,10 @@ async def sync_stock(session, cur, conn, symbol, stock_id):
             updated_at     = EXCLUDED.updated_at
         """,
         records,
-        page_size=500,
+        page_size=100,
     )
     conn.commit()
+    await asyncio.sleep(0.3)
     return len(records), 0
 
 
@@ -309,6 +310,9 @@ async def main():
                             f"[{i+1}/{len(stocks)}] {symbol} ✓ {inserted} 筆"
                             f"  (成功={success} 跳過={skipped} 失敗={failed})"
                         )
+                    if success % 3 == 0:
+                        logger.info("  ⏸ 每 3 支暫停 30s 讓 DB 休息…")
+                        await asyncio.sleep(30)
                 else:
                     skipped += 1
                     logger.debug(f"[{i+1}/{len(stocks)}] {symbol} 無資料")

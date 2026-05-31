@@ -249,6 +249,49 @@ def main():
     conn.close()
     logger.info(f"✅ 每日 K 線同步完成：成功={success}  跳過={skipped}  失敗={failed}")
 
+    # ── 更新 klines_latest（每股最新 100 筆）────────────────────────────────────
+    if success > 0:
+        logger.info("更新 klines_latest...")
+        try:
+            conn2 = psycopg2.connect(**DB_CONN)
+            cur2 = conn2.cursor()
+
+            # 取得今日有行情的股票清單
+            today_symbols = [sym for sym in stock_map if sym in today_data and today_data[sym].get("close")]
+
+            for sym in today_symbols:
+                cur2.execute("DELETE FROM klines_latest WHERE symbol = %s", (sym,))
+                cur2.execute("""
+                    INSERT INTO klines_latest
+                        (id, symbol, stock_id, date,
+                         open, high, low, close, volume, amount,
+                         change, change_percent,
+                         sma_20, sma_50, sma_200,
+                         rsi_14, macd, macd_signal, macd_histogram,
+                         created_at, updated_at)
+                    SELECT id, symbol, stock_id, date,
+                           open, high, low, close, volume, amount,
+                           change, change_percent,
+                           sma_20, sma_50, sma_200,
+                           rsi_14, macd, macd_signal, macd_histogram,
+                           created_at, updated_at
+                    FROM (
+                        SELECT *,
+                               ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+                        FROM klines_daily
+                        WHERE symbol = %s
+                    ) sub
+                    WHERE rn <= 100
+                    ON CONFLICT (symbol, date) DO NOTHING
+                """, (sym,))
+
+            conn2.commit()
+            cur2.close()
+            conn2.close()
+            logger.info(f"✅ klines_latest 更新完成（{len(today_symbols)} 支）")
+        except Exception as e:
+            logger.error(f"klines_latest 更新失敗: {e}")
+
 
 if __name__ == "__main__":
     import urllib3
