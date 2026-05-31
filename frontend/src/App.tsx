@@ -833,9 +833,9 @@ function App() {
         rightPriceScale: { borderColor: '#2a2d3e' },
       })
       const candleSeries = chart.addCandlestickSeries({
-        upColor: '#26a69a', downColor: '#ef5350',
-        borderUpColor: '#26a69a', borderDownColor: '#ef5350',
-        wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+        upColor: '#ef5350', downColor: '#26a69a',
+        borderUpColor: '#ef5350', borderDownColor: '#26a69a',
+        wickUpColor: '#ef5350', wickDownColor: '#26a69a',
       })
       candleSeries.setData(klineData.map((k: any) => ({
         time: k.date,
@@ -878,12 +878,12 @@ function App() {
 
       const renderOHLC = (d: string, o: number, h: number, lo: number, c: number) => {
         const chg = c - o
-        const chgColor = chg >= 0 ? '#26a69a' : '#ef5350'
+        const chgColor = chg >= 0 ? '#ef5350' : '#26a69a'
         ohlcEl.innerHTML =
           `<span style="color:#aaa;margin-right:8px">${d}</span>` +
           `<span style="margin-right:6px">開 <b style="color:#ddd">${o.toFixed(2)}</b></span>` +
-          `<span style="margin-right:6px">高 <b style="color:#26a69a">${h.toFixed(2)}</b></span>` +
-          `<span style="margin-right:6px">低 <b style="color:#ef5350">${lo.toFixed(2)}</b></span>` +
+          `<span style="margin-right:6px">高 <b style="color:#ef5350">${h.toFixed(2)}</b></span>` +
+          `<span style="margin-right:6px">低 <b style="color:#26a69a">${lo.toFixed(2)}</b></span>` +
           `<span style="margin-right:6px">收 <b style="color:${chgColor}">${c.toFixed(2)}</b></span>` +
           `<span style="color:${chgColor}">${chg >= 0 ? '▲' : '▼'} ${Math.abs(chg).toFixed(2)} (${Math.abs(chg/o*100).toFixed(2)}%)</span>`
       }
@@ -896,7 +896,7 @@ function App() {
           const display = val ?? last
           if (display === null) return ''
           const arrow = prev === null ? '' : (last??0) > prev ? ' ▲' : (last??0) < prev ? ' ▼' : ' ─'
-          const arrowColor = prev === null ? color : (last??0) > prev ? '#26a69a' : (last??0) < prev ? '#ef5350' : '#aaa'
+          const arrowColor = prev === null ? color : (last??0) > prev ? '#ef5350' : (last??0) < prev ? '#26a69a' : '#aaa'
           return `<span style="font-size:0.73rem;padding:2px 7px;border-radius:4px;background:rgba(0,0,0,0.6);border:1px solid ${color}50">` +
             `<span style="color:${color};font-weight:600">${label}</span>` +
             `<span style="color:#ddd;margin-left:4px">${(display as number).toFixed(2)}</span>` +
