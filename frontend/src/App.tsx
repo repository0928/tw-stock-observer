@@ -614,6 +614,21 @@ interface MacroIndicator {
 const API_URL = (import.meta.env.VITE_API_URL as string) || 'http://localhost:8000/api'
 const PAGE_SIZE = 50
 
+
+// ─── K 線均線計算 ─────────────────────────────────────────────────────────────
+
+function calcMA(data: any[], period: number): { time: string; value: number }[] {
+  const result: { time: string; value: number }[] = []
+  for (let i = period - 1; i < data.length; i++) {
+    let sum = 0
+    for (let j = i - period + 1; j <= i; j++) {
+      sum += parseFloat(data[j].close)
+    }
+    result.push({ time: data[i].date, value: parseFloat((sum / period).toFixed(2)) })
+  }
+  return result
+}
+
 // ─── 主元件 ──────────────────────────────────────────────────────────────────
 
 function App() {
@@ -829,6 +844,24 @@ function App() {
         low: parseFloat(k.low),
         close: parseFloat(k.close),
       })))
+
+      // 均線
+      const maConfigs = [
+        { period: 5,  color: '#f6c90e', title: 'MA5'  },
+        { period: 10, color: '#f97316', title: 'MA10' },
+        { period: 20, color: '#3b82f6', title: 'MA20' },
+        { period: 60, color: '#a855f7', title: 'MA60' },
+      ]
+      maConfigs.forEach(({ period, color, title }) => {
+        const maData = calcMA(klineData, period)
+        if (maData.length === 0) return
+        const lineSeries = chart.addLineSeries({
+          color, lineWidth: 1, title,
+          priceLineVisible: false, lastValueVisible: false,
+        })
+        lineSeries.setData(maData)
+      })
+
       chart.timeScale().fitContent()
       klineChartInstance.current = chart
     }
