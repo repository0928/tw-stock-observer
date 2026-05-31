@@ -754,6 +754,49 @@ async def run_migrations():
 
 # ==================== 應用生命週期 ====================
 
+
+async def sync_klines_daily_job():
+    """每日 K 線增量同步（UTC 09:45 = 台灣 17:45）"""
+    import asyncio, os, sys
+    logger.info("⏰ 開始自動同步每日 K 線...")
+    script = os.path.join(os.path.dirname(__file__), '..', 'sync_klines_daily.py')
+    script = os.path.abspath(script)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            logger.info(f"✅ K 線同步完成")
+        else:
+            logger.error(f"❌ K 線同步失敗 (code {proc.returncode}): {stderr.decode()[-500:]}")
+    except Exception as e:
+        logger.error(f"❌ K 線同步 job 例外: {e}")
+
+
+async def run_screener_cache_job():
+    """更新 screener 快取（UTC 10:15 = 台灣 18:15）"""
+    import asyncio, os, sys
+    logger.info("⏰ 開始更新 screener 快取...")
+    script = os.path.join(os.path.dirname(__file__), '..', 'run_screener_cache.py')
+    script = os.path.abspath(script)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            logger.info(f"✅ Screener 快取更新完成")
+        else:
+            logger.error(f"❌ Screener 快取失敗 (code {proc.returncode}): {stderr.decode()[-500:]}")
+    except Exception as e:
+        logger.error(f"❌ Screener 快取 job 例外: {e}")
+
+
 scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
@@ -822,6 +865,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         sync_dividend_job,
         CronTrigger(hour=9, minute=20, timezone="UTC"),
         id="sync_dividend",
+        replace_existing=True,
+    )
+
+    # 每天 UTC 09:45（台灣 17:45）同步每日 K 線
+    scheduler.add_job(
+        sync_klines_daily_job,
+        CronTrigger(hour=9, minute=45, timezone="UTC"),
+        id="sync_klines_daily",
+        replace_existing=True,
+    )
+
+    # 每天 UTC 10:15（台灣 18:15）更新 screener 快取
+    scheduler.add_job(
+        run_screener_cache_job,
+        CronTrigger(hour=10, minute=15, timezone="UTC"),
+        id="run_screener_cache",
         replace_existing=True,
     )
 
